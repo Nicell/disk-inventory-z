@@ -152,6 +152,7 @@ NSString *CollectFileKindStatisticsCanceledException = @"CollectFileKindStatisti
 - (void) reserveColorsForLargestKinds;
 
 - (void) recalculateTotalSize;
+- (BOOL) replaceSelectedItems: (NSArray*) items;
 
 - (NSMutableDictionary*) viewOptions;
 
@@ -167,6 +168,7 @@ NSString *DocKeySelectedItem = @"selectedItem";
 
 /* FileSystemDoc Notifications */
 NSString *GlobalSelectionChangedNotification = @"GlobalSelectionChanged";
+NSString *SelectedItemsChangedNotification = @"SelectedItemsChanged";
 NSString *ZoomedItemChangedNotification = @"ZoomedItemChanged";
 NSString *FSItemsChangedNotification = @"FSItemsChanged";
 NSString *ViewOptionChangedNotification = @"ViewOptionsChangedNotification";
@@ -237,6 +239,7 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 	[_kindColors release];
 
+    [_selectedItems release];
     [_pendingScanURL release];
     if ( _scanQueue != NULL )
     {
@@ -919,6 +922,142 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 	return YES;
 }
 
+- (NSUInteger) moveItemsToTrash: (NSArray*) items errors: (NSArray**) errors
+{
+	// A folder and something inside of it may both be selected. Moving the
+	// folder takes care of both, and the inner move would just fail.
+	NSSet *itemSet = [NSSet setWithArray: items];
+	NSMutableArray *itemsToMove = [NSMutableArray arrayWithCapacity: [items count]];
+	for ( FSItem *item in items )
+	{
+		if ( [item isSpecialItem] || item == [self zoomedItem] || [item parent] == nil )
+			continue;
+
+		BOOL ancestorIsSelected = NO;
+		for ( FSItem *ancestor = [item parent]; ancestor != nil && !ancestorIsSelected; ancestor = [ancestor parent] )
+			ancestorIsSelected = [itemSet containsObject: ancestor];
+
+		if ( !ancestorIsSelected )
+			[itemsToMove addObject: item];
+	}
+
+	NSUInteger count = [itemsToMove count];
+	NSMutableArray *errorList = [NSMutableArray array];
+	if ( count == 0 )
+	{
+		if ( errors != NULL )
+			*errors = errorList;
+		return 0;
+	}
+
+	// FSItem isn't thread-safe, so collect what the workers need up front.
+	NSMutableArray *urls = [NSMutableArray arrayWithCapacity: count];
+	BOOL *isLocal = calloc( count, sizeof(BOOL) );
+	NSURL **newURLs = calloc( count, sizeof(NSURL*) );
+	NSError **itemErrors = calloc( count, sizeof(NSError*) );
+	BOOL *succeeded = calloc( count, sizeof(BOOL) );
+	for ( NSUInteger i = 0; i < count; i++ )
+	{
+		NSURL *url = [[itemsToMove objectAtIndex: i] fileURL];
+		[urls addObject: url];
+		isLocal[i] = [url isLocalVolume];
+	}
+
+	// Each move is a quick rename within the volume, so they can run side by side.
+	dispatch_apply( count, dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^( size_t i ) {
+		@autoreleasepool
+		{
+			NSFileManager *fileManager = [NSFileManager defaultManager];
+			NSURL *newURL = nil;
+			NSError *error = nil;
+			// As in -moveItemToTrash:error:, items on network volumes get deleted (like the Finder does).
+			succeeded[i] = isLocal[i] ? [fileManager trashItemAtURL: [urls objectAtIndex: i] resultingItemURL: &newURL error: &error]
+									  : [fileManager removeItemAtURL: [urls objectAtIndex: i] error: &error];
+			newURLs[i] = [newURL retain];
+			itemErrors[i] = [error retain];
+		}
+	});
+
+	// Keep the data model in sync, with one change per parent and one notification in the end.
+	[self setSelectedItems: @[] primary: nil];
+
+	NSMapTable *childrenByParent = [NSMapTable strongToStrongObjectsMapTable];
+	NSMutableDictionary *trashFolderItems = [NSMutableDictionary dictionary];
+	NSMutableArray *failedItems = [NSMutableArray array];
+	NSUInteger movedCount = 0;
+
+	[self willChangeValueForKey: @"kindStatistics"];
+	for ( NSUInteger i = 0; i < count; i++ )
+	{
+		FSItem *item = [itemsToMove objectAtIndex: i];
+		if ( !succeeded[i] )
+		{
+			[failedItems addObject: item];
+			if ( itemErrors[i] != nil )
+				[errorList addObject: itemErrors[i]];
+			continue;
+		}
+		movedCount++;
+
+		NSMutableArray *children = [childrenByParent objectForKey: [item parent]];
+		if ( children == nil )
+		{
+			children = [NSMutableArray array];
+			[childrenByParent setObject: children forKey: [item parent]];
+		}
+		[children addObject: item];
+		[self removeItemFromFileKindStatistic: item includingChilds: YES];
+	}
+
+	for ( FSItem *parent in childrenByParent )
+		[parent removeChildren: [childrenByParent objectForKey: parent] updateParent: YES];
+
+	for ( NSUInteger i = 0; i < count; i++ )
+	{
+		if ( !succeeded[i] || newURLs[i] == nil )
+			continue;
+
+		// The trash folder is only part of the tree if the user scanned it.
+		NSString *trashPath = [[newURLs[i] URLByDeletingLastPathComponent] path];
+		id trashFolderItem = [trashFolderItems objectForKey: trashPath];
+		if ( trashFolderItem == nil )
+		{
+			trashFolderItem = [[self rootItem] findItemByAbsolutePath: trashPath allowAncestors: NO];
+			if ( trashFolderItem == nil )
+				trashFolderItem = [NSNull null];
+			[trashFolderItems setObject: trashFolderItem forKey: trashPath];
+		}
+		if ( trashFolderItem != [NSNull null] )
+		{
+			FSItem *item = [itemsToMove objectAtIndex: i];
+			[item setFileURL: newURLs[i]];
+			[trashFolderItem insertChild: item updateParent: YES];
+			[self addItemToFileKindStatistic: item includingChilds: YES];
+		}
+	}
+	[self didChangeValueForKey: @"kindStatistics"];
+
+	for ( NSUInteger i = 0; i < count; i++ )
+	{
+		[newURLs[i] release];
+		[itemErrors[i] release];
+	}
+	free( isLocal );
+	free( newURLs );
+	free( itemErrors );
+	free( succeeded );
+
+	[[NSNotificationCenter defaultCenter] postNotificationName: FSItemsChangedNotification object: self];
+
+	// What's left selected is what still needs attention.
+	if ( [failedItems count] != 0 )
+		[self setSelectedItems: failedItems primary: nil];
+
+	if ( errors != NULL )
+		*errors = errorList;
+	return movedCount;
+}
+
 - (void) refreshItem: (FSItem*) item
 {
 	//refresh zoomed item?
@@ -1162,19 +1301,61 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) setSelectedItem: (FSItem*) item
 {
-    if ( _selectedItem == item )
-        return;
+	BOOL itemsChanged = NO;
+	if ( !_updatingSelectedItems )
+		itemsChanged = [self replaceSelectedItems: item != nil ? @[ item ] : @[]];
 
-	FSItem *oldSelectedItem = _selectedItem;
-    
-	_selectedItem = item;
-		
-    //post notification
-	[self postNotificationName: GlobalSelectionChangedNotification oldItem: oldSelectedItem newItem: _selectedItem];
-	
-	//keep info panel in sync
-	if ( [[InfoPanelController sharedController] panelIsVisible] )
-		[[InfoPanelController sharedController] showPanelWithFSItem: _selectedItem];
+    if ( _selectedItem != item )
+    {
+		FSItem *oldSelectedItem = _selectedItem;
+
+		_selectedItem = item;
+
+		//post notification
+		[self postNotificationName: GlobalSelectionChangedNotification oldItem: oldSelectedItem newItem: _selectedItem];
+
+		//keep info panel in sync
+		if ( [[InfoPanelController sharedController] panelIsVisible] )
+			[[InfoPanelController sharedController] showPanelWithFSItem: _selectedItem];
+    }
+
+	if ( itemsChanged )
+		[[NSNotificationCenter defaultCenter] postNotificationName: SelectedItemsChangedNotification object: self];
+}
+
+- (BOOL) replaceSelectedItems: (NSArray*) items
+{
+	if ( _selectedItems == items || [_selectedItems isEqualToArray: items] || ( _selectedItems == nil && [items count] == 0 ) )
+		return NO;
+
+	[_selectedItems release];
+	_selectedItems = [items copy];
+	return YES;
+}
+
+- (NSArray*) selectedItems
+{
+	return _selectedItems != nil ? _selectedItems : @[];
+}
+
+- (void) setSelectedItems: (NSArray*) items primary: (FSItem*) primary
+{
+	NSMutableOrderedSet *uniqueItems = [NSMutableOrderedSet orderedSetWithCapacity: [items count]];
+	for ( FSItem *item in items )
+		if ( ![item isSpecialItem] )
+			[uniqueItems addObject: item];
+
+	if ( primary == nil || ![uniqueItems containsObject: primary] )
+		primary = [uniqueItems lastObject];
+
+	BOOL itemsChanged = [self replaceSelectedItems: [uniqueItems array]];
+
+	_updatingSelectedItems = YES;
+	[self setSelectedItem: primary];
+	_updatingSelectedItems = NO;
+
+	if ( itemsChanged )
+		[[NSNotificationCenter defaultCenter] postNotificationName: SelectedItemsChangedNotification object: self];
 }
 
 - (NSString *)displayName

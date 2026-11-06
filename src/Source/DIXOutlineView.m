@@ -32,7 +32,8 @@
     NSInteger columnIndex = [self columnAtPoint:point];
     NSInteger rowIndex = [self rowAtPoint:point];
 	
-    if ( rowIndex >= 0 && [self numberOfSelectedRows] <= 1)
+    // keep a multiple selection if the click is on part of it, so the menu acts on all of it
+    if ( rowIndex >= 0 && ![self isRowSelected: rowIndex] )
         [self selectRowIndexes:[NSIndexSet indexSetWithIndex:rowIndex] byExtendingSelection: NO];
 	
     id delegate = [self delegate];

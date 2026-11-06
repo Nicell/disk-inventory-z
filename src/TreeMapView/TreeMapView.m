@@ -90,6 +90,9 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
     [_rootItemRenderer release];
     [self deallocContentCache]; 
 
+    [_additionalSelectedRenderers release];
+    [_additionalSelectedItems release];
+
     [super dealloc];
 }
 
@@ -211,6 +214,8 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
         {
             [_selectedRenderer drawHighlightFrame];
         }
+
+        [_additionalSelectedRenderers makeObjectsPerformSelector: @selector(drawHighlightFrame)];
     }
 }
 
@@ -241,15 +246,59 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
     //find the hitted item
     TMVItem* renderer = [_rootItemRenderer hitTest: point];
 
-    if ( renderer != _selectedRenderer )
-    {
-        _selectedRenderer = renderer;
-        
-        //post notification
-        [[NSNotificationCenter defaultCenter] postNotificationName: TreeMapViewSelectionDidChangedNotification object: self userInfo: nil];
+    // A click on the selected item still counts: with a multiple selection,
+    // it narrows the selection down or takes the item out again.
+    _selectionClickModifiers = [theEvent modifierFlags] & ( NSEventModifierFlagCommand | NSEventModifierFlagShift );
+    _selectedRenderer = renderer;
 
-        [self setNeedsDisplay: YES];
+    //post notification
+    [[NSNotificationCenter defaultCenter] postNotificationName: TreeMapViewSelectionDidChangedNotification object: self userInfo: nil];
+
+    _selectionClickModifiers = 0;
+
+    [self setNeedsDisplay: YES];
+}
+
+- (NSEventModifierFlags) takeSelectionClickModifiers
+{
+    NSEventModifierFlags modifiers = _selectionClickModifiers;
+    _selectionClickModifiers = 0;
+    return modifiers;
+}
+
+- (void) collectRenderersForAdditionalSelectedItems: (TMVItem*) renderer
+{
+    if ( [_additionalSelectedItems containsObject: [renderer item]] )
+    {
+        [_additionalSelectedRenderers addObject: renderer];
+        return;
     }
+
+    NSUInteger count = [renderer childCount];
+    for ( NSUInteger i = 0; i < count; i++ )
+        [self collectRenderersForAdditionalSelectedItems: [renderer childAtIndex: (unsigned) i]];
+}
+
+- (void) updateAdditionalSelectedRenderers
+{
+    [_additionalSelectedRenderers release];
+    _additionalSelectedRenderers = nil;
+
+    if ( [_additionalSelectedItems count] != 0 && _rootItemRenderer != nil )
+    {
+        _additionalSelectedRenderers = [[NSMutableArray alloc] init];
+        [self collectRenderersForAdditionalSelectedItems: _rootItemRenderer];
+    }
+}
+
+- (void) setAdditionalSelectedItems: (NSSet*) items
+{
+    [items retain];
+    [_additionalSelectedItems release];
+    _additionalSelectedItems = items;
+
+    [self updateAdditionalSelectedRenderers];
+    [self setNeedsDisplay: YES];
 }
 
 - (void)rightMouseDown:(NSEvent *)theEvent
@@ -413,6 +462,8 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 
     _selectedRenderer = nil;
     _touchedRenderer = nil;
+    [_additionalSelectedRenderers release];
+    _additionalSelectedRenderers = nil;
 
 	if ( _rootItemRenderer == nil )
 	{

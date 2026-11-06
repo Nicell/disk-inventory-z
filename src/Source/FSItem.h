@@ -104,6 +104,7 @@ typedef enum
 - (unsigned) childCount;
 
 - (void) removeChild: (FSItem*) child updateParent: (BOOL) updateParent; //child will be released!
+- (void) removeChildren: (NSArray<FSItem*>*) children updateParent: (BOOL) updateParent; //one pass, however many children
 - (void) insertChild: (FSItem*) newChild updateParent: (BOOL) updateParent;
 - (void) replaceChild: (FSItem*) oldChild withItem: (FSItem*) newChild updateParent: (BOOL) updateParent;
 

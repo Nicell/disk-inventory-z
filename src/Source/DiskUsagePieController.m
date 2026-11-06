@@ -28,7 +28,9 @@
                                                   backing: NSBackingStoreBuffered
                                                     defer: YES];
     [panel setTitle: NSLocalizedString( @"Disk Usage", @"Pie chart panel title" )];
-    [panel setFloatingPanel: YES];
+    // Stays above the document window while this app is active, but mustn't
+    // sit on top of other apps. See -applicationActiveStateChanged:.
+    [panel setFloatingPanel: [NSApp isActive]];
     [panel setBecomesKeyOnlyIfNeeded: YES];
     [panel setHidesOnDeactivate: NO];
     [panel setReleasedWhenClosed: NO];
@@ -44,6 +46,15 @@
 
     [self buildContent];
     [self refresh];
+
+    [[NSNotificationCenter defaultCenter] addObserver: self
+                                             selector: @selector(applicationActiveStateChanged:)
+                                                 name: NSApplicationDidBecomeActiveNotification
+                                               object: nil];
+    [[NSNotificationCenter defaultCenter] addObserver: self
+                                             selector: @selector(applicationActiveStateChanged:)
+                                                 name: NSApplicationDidResignActiveNotification
+                                               object: nil];
 
     // Observe doc-level item changes (refresh, move-to-trash) so the
     // pie updates when the model changes after the initial scan.
@@ -161,6 +172,11 @@
 
     [self refresh];
     [panel orderFront: nil];
+}
+
+- (void) applicationActiveStateChanged: (NSNotification*) notification
+{
+    [(NSPanel*) [self window] setFloatingPanel: [NSApp isActive]];
 }
 
 - (void) onItemsChanged: (NSNotification*) note

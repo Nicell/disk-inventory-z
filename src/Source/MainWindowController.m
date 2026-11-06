@@ -38,6 +38,8 @@
 
 @interface MainWindowController(Private)
 - (void) performMoveToTrashForItem: (FSItem*) selectedItem;
+- (void) performMoveToTrashForItems: (NSArray*) items;
+- (BOOL) itemResidesInTrash: (FSItem*) item;
 @end
 
 @implementation MainWindowController
@@ -136,6 +138,10 @@
 	[[NSNotificationCenter defaultCenter] addObserver: self
 											 selector: @selector(updateStatusBar)
 												 name: FSItemsChangedNotification
+											   object: [self document]];
+	[[NSNotificationCenter defaultCenter] addObserver: self
+											 selector: @selector(updateStatusBar)
+												 name: SelectedItemsChangedNotification
 											   object: [self document]];
 	[self updateStatusBar];
 
@@ -595,8 +601,29 @@
 	[numFmt setGroupingSeparator: @","];
 	NSString *filesStr = [numFmt stringFromNumber: @((unsigned long) g_fileCount + (unsigned long) g_folderCount)];
 
-	[_statusBar setStringValue: [NSString stringWithFormat: @"%@   ·   %@   ·   %@ files",
-		[root path], sizeStr, filesStr]];
+	NSString *status = [NSString stringWithFormat: @"%@   ·   %@   ·   %@ files",
+		[root path], sizeStr, filesStr];
+
+	// What a delete would remove. A file inside a selected folder is already part of the folder's size.
+	NSArray *selectedItems = [doc selectedItems];
+	if ( [selectedItems count] > 1 )
+	{
+		NSSet *selectedSet = [NSSet setWithArray: selectedItems];
+		unsigned long long selectedSize = 0;
+		for ( FSItem *item in selectedItems )
+		{
+			BOOL ancestorIsSelected = NO;
+			for ( FSItem *ancestor = [item parent]; ancestor != nil && !ancestorIsSelected; ancestor = [ancestor parent] )
+				ancestorIsSelected = [selectedSet containsObject: ancestor];
+			if ( !ancestorIsSelected )
+				selectedSize += [item sizeValue];
+		}
+		status = [status stringByAppendingFormat: NSLocalizedString(@"   ·   %@ selected (%@)", @""),
+			[numFmt stringFromNumber: @([selectedItems count])],
+			[sizeFmt stringForObjectValue: @(selectedSize)]];
+	}
+
+	[_statusBar setStringValue: status];
 }
 
 - (void) showSelectionListPanel
@@ -748,6 +775,43 @@
 	FileSystemDoc *doc = [self document];
     FSItem *selectedItem = [doc selectedItem];
 	
+	if ( [[doc selectedItems] count] > 1 )
+	{
+		NSMutableArray *items = [NSMutableArray array];
+		NSUInteger networkItemCount = 0;
+		for ( FSItem *item in [doc selectedItems] )
+		{
+			if ( item == [doc zoomedItem] || [item isSpecialItem] || [self itemResidesInTrash: item] )
+				continue;
+			[items addObject: item];
+			if ( ![[item fileURL] isLocalVolume] )
+				networkItemCount++;
+		}
+
+		if ( [items count] == 0 )
+			return;
+
+		if ( networkItemCount == 0 )
+		{
+			[self performMoveToTrashForItems: items];
+			return;
+		}
+
+		//items on network volumes get deleted for good, so warn the user and ask to proceed
+		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+		alert.messageText = [NSString stringWithFormat: NSLocalizedString(@"%lu of the %lu selected items could not be moved to the trash.",@""),
+														(unsigned long) networkItemCount, (unsigned long) [items count]];
+		alert.informativeText = NSLocalizedString(@"Would you like to delete them immediately?",@"");
+		[alert addButtonWithTitle: NSLocalizedString(@"No",@"")];  //first button is default (Return key)
+		[alert addButtonWithTitle: NSLocalizedString(@"Yes",@"")];
+		[alert beginSheetModalForWindow: [self window] completionHandler: ^(NSModalResponse returnCode)
+		{
+			if ( returnCode == NSAlertSecondButtonReturn ) //"Yes"
+				[self performMoveToTrashForItems: items];
+		}];
+		return;
+	}
+
 	if ( selectedItem == nil || selectedItem == [doc zoomedItem] || [selectedItem isSpecialItem] )
 		return;
 	
@@ -926,6 +990,10 @@
     }
     else if ( menuAction == @selector(moveToTrash:) )
     {
+		//-moveToTrash: leaves out what can't be moved
+		if ( [[doc selectedItems] count] > 1 )
+			return YES;
+
 		//the trash folder and items residing in it can't be moved to trash
 		BOOL selectItemResidesInTrash = NO;
 		if ( selectedItem != nil )
@@ -1195,6 +1263,59 @@
 @end
 
 @implementation MainWindowController(Private)
+
+- (BOOL) itemResidesInTrash: (FSItem*) item
+{
+	NSURL *url = [item fileURL];
+	NSURL *trashURL = [[NSFileManager defaultManager] URLForDirectory: NSTrashDirectory inDomain: NSUserDomainMask appropriateForURL: url create: NO error: nil];
+
+	return trashURL != nil && ( [url isEqualToURL: trashURL] || [url residesInDirectoryURL: trashURL] );
+}
+
+- (void) performMoveToTrashForItems: (NSArray*) items
+{
+	FileSystemDoc *doc = [self document];
+
+	//the poof effect shows up where the user clicked last; its position is gone after the move
+	NSRect cellRect = NSZeroRect;
+	NSView *view = nil;
+	if ( [doc selectedItem] != nil )
+	{
+		if ( [[self window] firstResponder] == _filesOutlineView )
+		{
+			view = _filesOutlineView;
+			cellRect = [_filesOutlineView frameOfCellAtColumn: 0 row: [_filesOutlineView selectedRow]];
+		}
+		else
+		{
+			view = _treeMapView;
+			cellRect = [_treeMapView itemRectByPathToItem: [[doc selectedItem] fsItemPathFromAncestor: [doc zoomedItem]]];
+		}
+	}
+
+	NSArray *errors = nil;
+	NSUInteger movedCount = [doc moveItemsToTrash: items errors: &errors];
+
+	if ( movedCount != 0 )
+	{
+		if ( view != nil )
+			[[self class] poofEffectInView: view inRect: cellRect];
+
+		[self synchronizeWindowTitleWithDocumentName];
+	}
+
+	if ( [errors count] != 0 )
+	{
+		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+		alert.alertStyle = NSAlertStyleInformational;
+		alert.messageText = [NSString stringWithFormat: NSLocalizedString(@"%lu items cannot be moved to the trash by Disk Inventory Z.",@""),
+														(unsigned long) [errors count]];
+		NSString *reason = [[errors firstObject] localizedFailureReason];
+		if ( reason != nil )
+			alert.informativeText = reason;
+		[alert beginSheetModalForWindow: [self window] completionHandler: nil];
+	}
+}
 
 - (void) performMoveToTrashForItem: (FSItem*) selectedItem
 {

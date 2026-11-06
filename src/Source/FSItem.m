@@ -415,6 +415,38 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 	}
 }
 
+- (void) removeChildren: (NSArray<FSItem*>*) children updateParent: (BOOL) updateParent
+{
+	NSAssert( ![self isSpecialItem], @"removeChildren is illegal call for special item" );
+
+	NSSet *childrenToRemove = [NSSet setWithArray: children];
+	NSMutableIndexSet *indexes = [NSMutableIndexSet indexSet];
+	unsigned long long removedSize = 0;
+
+	NSUInteger count = [_childs count];
+	for ( NSUInteger i = 0; i < count; i++ )
+	{
+		FSItem *child = [_childs objectAtIndex: i];
+		if ( [childrenToRemove containsObject: child] )
+		{
+			[indexes addIndex: i];
+			removedSize += [child sizeValue];
+		}
+	}
+
+	if ( [indexes count] == 0 )
+		return;
+
+	unsigned long long myOldSize = [self sizeValue];
+	unsigned long long myNewSize = myOldSize - removedSize;
+
+	[self setSizeValue: myNewSize];
+	[_childs removeObjectsAtIndexes: indexes];
+
+	if ( updateParent && ![self isRoot] )
+		[[self parent] childChanged: self oldSize: myOldSize newSize: myNewSize];
+}
+
 - (void) insertChild: (FSItem*) newChild updateParent: (BOOL) updateParent
 {
 	unsigned long long myOldSize = [self sizeValue];

@@ -25,6 +25,7 @@
 
 - (void)observeValueForKeyPath:(NSString*)keyPath ofObject:(id)object change:(NSDictionary*)change context:(void*)context;
 - (void) onDocumentSelectionChanged;
+- (void) selectedItemsChanged: (NSNotification*) notification;
 - (void) reloadData;
 
 @end
@@ -60,6 +61,11 @@
     [notificationCenter addObserver: self
 						   selector: @selector(scanFinished:)
 							   name: DIXScanFinishedNotification
+							 object: doc];
+
+    [notificationCenter addObserver: self
+						   selector: @selector(selectedItemsChanged:)
+							   name: SelectedItemsChangedNotification
 							 object: doc];
 
     [notificationCenter addObserver: self
@@ -222,8 +228,10 @@
 
 		if ( ![fsItem isSpecialItem] )
 		{
+			// A click on part of a multiple selection keeps it, so the menu acts on all of it.
 			FileSystemDoc *document = [self document];
-			[document setSelectedItem: fsItem];
+			if ( ![[document selectedItems] containsObject: fsItem] )
+				[document setSelectedItem: fsItem];
 		}
 		
 		[self onDocumentSelectionChanged];
@@ -265,17 +273,48 @@
 
 - (void) treeMapViewSelectionDidChange: (NSNotification*) notification
 {
+    NSEventModifierFlags modifiers = [(TreeMapView*)_treeMapView takeSelectionClickModifiers];
     FSItem *item = [(TreeMapView*)_treeMapView selectedItem];
 
     FileSystemDoc *doc = [self document];
 
+    if ( modifiers != 0 )
+    {
+        // Command or Shift-click adds the item, or takes it out again. The treemap
+        // has no order that would give a Shift-click a range to select.
+        if ( item != nil && ![item isSpecialItem] )
+        {
+            NSMutableArray *items = [[[doc selectedItems] mutableCopy] autorelease];
+            if ( [items containsObject: item] )
+                [items removeObject: item];
+            else
+                [items addObject: item];
+
+            [doc setSelectedItems: items primary: [items containsObject: item] ? item : [items lastObject]];
+        }
+        // the click may have moved the highlight to something that isn't selected
+        [self onDocumentSelectionChanged];
+        return;
+    }
+
     //if we are notified about the selection change after we've set the selection by ourself
     //(e.g. in 'onDocumentSelectionChanged') we don't want to post any notification
-    if ( [doc selectedItem] != item
+    if ( ( [doc selectedItem] != item || [[doc selectedItems] count] > 1 )
 		 && ![item isSpecialItem] )
     {
         [doc setSelectedItem: item];
     }
+}
+
+- (void) selectedItemsChanged: (NSNotification*) notification
+{
+    FileSystemDoc *doc = [self document];
+
+    NSMutableSet *additionalItems = [NSMutableSet setWithArray: [doc selectedItems]];
+    if ( [doc selectedItem] != nil )
+        [additionalItems removeObject: [doc selectedItem]];
+
+    [_treeMapView setAdditionalSelectedItems: additionalItems];
 }
 
 #pragma mark --------document notifications-----------------
@@ -404,6 +443,7 @@
 {
 	[_treeMapView reloadData];
 	[self onDocumentSelectionChanged];
+	[self selectedItemsChanged: nil];
 }
 
 @end

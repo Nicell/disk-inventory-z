@@ -51,7 +51,9 @@
 @interface FileSystemDoc : NSDocument
 {
     FSItem *_rootItem;
-    FSItem *_selectedItem;
+    FSItem *_selectedItem;	//the primary selection: the last item the user selected
+    NSArray *_selectedItems;	//everything selected, including _selectedItem
+    BOOL _updatingSelectedItems;
     NSMutableArray *_zoomStack;
     NSMutableDictionary *_fileKindStatistics;	//dictionary: kind name -> FileKindStatistic
 	NSMutableDictionary *_viewOptions;
@@ -116,6 +118,9 @@
 
 - (FSItem*) rootItem;
 
+// Moves all items in one go and returns how many were moved. Items inside of another
+// listed item come along with it. Those that fail stay selected and in the tree.
+- (NSUInteger) moveItemsToTrash: (NSArray*) items errors: (NSArray**) errors;
 - (BOOL) moveItemToTrash: (FSItem*) item error:(NSError **)error;//will post a "FSItemsChangedNotification"
 - (void) refreshItem: (FSItem*) item;//will post a "FSItemsChangedNotification"
 
@@ -126,7 +131,10 @@
 - (NSArray*) zoomStack;
 
 - (FSItem*) selectedItem;
-- (void) setSelectedItem: (FSItem*) item; //will post a "GlobalSelectionChangedNotification"
+- (void) setSelectedItem: (FSItem*) item; //will post a "GlobalSelectionChangedNotification"; replaces a multiple selection
+
+- (NSArray*) selectedItems; //never nil; contains the primary selection, if there is one
+- (void) setSelectedItems: (NSArray*) items primary: (FSItem*) primary; //will post a "SelectedItemsChangedNotification"
 
 - (FileKindStatistic*) kindStatisticForItem: (FSItem*) item;
 - (FileKindStatistic*) kindStatisticForKind: (NSString*) kindName;
@@ -143,6 +151,7 @@ extern NSString *DocKeySelectedItem;
 
 /* FileSystemDoc Notifications */
 extern NSString *GlobalSelectionChangedNotification; //userInfo contains new and old selection
+extern NSString *SelectedItemsChangedNotification; //the set of selected items has changed; userInfo is nil
 extern NSString *ZoomedItemChangedNotification; //userInfo contains new and old zoomed item
 extern NSString *FSItemsChangedNotification; //some items are modified, deleted or added; userInfo is nil
 extern NSString *ViewOptionChangedNotification; //the name of the changed option is stored in userInfo for key ChangedViewOption (see next line)

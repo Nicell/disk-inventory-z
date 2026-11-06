@@ -26,6 +26,7 @@
 @interface FilesOutlineViewController(Private)
 
 - (void) onDocumentSelectionChanged;
+- (void) selectedItemsChanged: (NSNotification*) notification;
 - (void) reloadPackages: (FSItem*) parent;
 - (void) reloadData;
 - (void) observeValueForKeyPath:(NSString*)keyPath ofObject:(id)object change:(NSDictionary*)change context:(void*)context;
@@ -55,6 +56,11 @@
 				   name: FSItemsChangedNotification
 				 object: doc];
 	
+    [center addObserver: self
+			   selector: @selector(selectedItemsChanged:)
+				   name: SelectedItemsChangedNotification
+				 object: doc];
+
     [center addObserver: self
 			   selector: @selector(windowWillClose:)
 				   name: NSWindowWillCloseNotification
@@ -228,14 +234,44 @@ objectValueForTableColumn: (NSTableColumn *) tableColumn
 
 - (void) outlineViewSelectionDidChange: (NSNotification*) notification
 {
-    FSItem *item = [_outlineView selectedItem];
-
-    FileSystemDoc *doc = [self document];
-
     //if we are notified about the selection change after we've set the selection by ourself
     //(e.g. in 'onDocumentSelectionChanged') we don't want to post any notification
-    if ( item != [doc selectedItem] )
-        [doc setSelectedItem: item];
+    if ( _syncingSelection )
+        return;
+
+    FSItem *item = [_outlineView selectedItem];
+    FileSystemDoc *doc = [self document];
+
+    NSIndexSet *rows = [_outlineView selectedRowIndexes];
+    NSMutableArray *items = [NSMutableArray arrayWithCapacity: [rows count]];
+    [rows enumerateIndexesUsingBlock: ^( NSUInteger row, BOOL *stop ) {
+        [items addObject: [_outlineView itemAtRow: row]];
+    }];
+
+    _syncingSelection = YES;
+    [doc setSelectedItems: items primary: item];
+    _syncingSelection = NO;
+}
+
+- (void) selectedItemsChanged: (NSNotification*) notification
+{
+    if ( _syncingSelection )
+        return;
+
+    NSMutableIndexSet *rows = [NSMutableIndexSet indexSet];
+    for ( FSItem *item in [[self document] selectedItems] )
+    {
+        NSInteger row = [_outlineView rowForItem: item];
+        if ( row >= 0 )
+            [rows addIndex: row];
+    }
+
+    if ( ![rows isEqualToIndexSet: [_outlineView selectedRowIndexes]] )
+    {
+        _syncingSelection = YES;
+        [_outlineView selectRowIndexes: rows byExtendingSelection: NO];
+        _syncingSelection = NO;
+    }
 }
 
 #pragma mark --------document notifications-----------------
@@ -306,6 +342,9 @@ objectValueForTableColumn: (NSTableColumn *) tableColumn
 	if ( item == (FSItem*) [_outlineView selectedItem] )
 		return;
 	
+    BOOL wasSyncingSelection = _syncingSelection;
+    _syncingSelection = YES;
+
     if ( item == nil )
         [_outlineView deselectAll: nil];
     else
@@ -346,6 +385,8 @@ objectValueForTableColumn: (NSTableColumn *) tableColumn
             [_outlineView scrollRowToVisible: row];
         }
     }
+
+    _syncingSelection = wasSyncingSelection;
 }
 
 - (void) reloadData

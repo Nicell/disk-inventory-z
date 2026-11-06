@@ -21,6 +21,9 @@ typedef TMVItem* TMVCellId;
     IBOutlet id delegate;
     IBOutlet id dataSource;
     TMVItem *_selectedRenderer;
+    NSSet *_additionalSelectedItems;
+    NSMutableArray *_additionalSelectedRenderers;
+    NSEventModifierFlags _selectionClickModifiers;
     TMVItem *_touchedRenderer;
     NSBitmapImageRep *_cachedContent;
 	id _zoomer;
@@ -52,6 +55,10 @@ typedef TMVItem* TMVCellId;
 - (void) selectItemByCellId: (TMVCellId) cellId;
 	//selects a treemap cell
 - (void) selectItemByPathToItem: (NSArray*) path;
+- (void) setAdditionalSelectedItems: (NSSet*) items;
+	//highlights these data items too; only the data source knows what they mean together
+- (NSEventModifierFlags) takeSelectionClickModifiers;
+	//Command or Shift, if the selection change being notified came from such a click; reading clears it
 	//item to select is identified by path from root to item in question (<root><child1><child2><itemtoSelect>)
 
 - (NSRect) itemRectByCellId: (TMVCellId) cellId;
