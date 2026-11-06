@@ -20,23 +20,28 @@ static NSColor* _nameColor;
 static NSMutableDictionary *_gridTextAttributes;
 static NSMutableDictionary *_cushionTextAttributes;
 
+typedef struct { TMVCushionRenderer **renderers; NSUInteger count, capacity; } TMVLeafList;
+
 //============================ interface TMVItem( Private ) =============================================
 
 @interface TMVItem( Private )
 
-- (void) drawCushionInBitmap: (NSBitmapImageRep*) bitmap parentCushion: (TMVCushionRenderer*) parentCushion cushionHeightFactor: (float) heightFactor;
+- (void) collectLeaves: (TMVLeafList*) leaves parentCushion: (TMVCushionRenderer*) parentCushion cushionHeightFactor: (float) heightFactor;
 
 - (void) layoutChilds;
-- (void) arrangeChildsOnRows: (NSMutableArray*) rows
-                childsPerRow: (NSMutableArray*) childsPerRow
-                 childWidths: (NSMutableArray*) childWidths
-                rowsAreHoriz: (BOOL*) horizontal;
+- (void) setHidden;
+- (NSUInteger) arrangeChildsOnRows: (double*) rows
+                      childsPerRow: (NSUInteger*) childsPerRow
+                       childWidths: (double*) childWidths
+                           weights: (const double*) weights
+                        childCount: (NSUInteger) childCount
+                      rowsAreHoriz: (BOOL*) horizontal;
 - (double) calculateRow: (NSUInteger) startChildIndex
                rowWidth: (double) rowWidth
             childsUsed : (NSUInteger*) childsUsed
-            childWidths: (NSMutableArray*) childWidths;
-
-- (void) createChildRenderers;
+            childWidths: (double*) childWidths
+                weights: (const double*) weights
+             childCount: (NSUInteger) childCount;
 @end
 
 //============================ implementation TMVItem =============================================
@@ -72,11 +77,7 @@ static NSMutableDictionary *_cushionTextAttributes;
 
     _cushionRenderer = [[TMVCushionRenderer alloc] init];
 
-    // Renderers below the root are created when they get laid out, see -layoutChilds.
-    // Most items of a big tree are too small to ever get there.
-    if ( _item == nil && ![self isLeaf] )
-        [self createChildRenderers];
-
+    // Child renderers are created when they get laid out, see -layoutChilds.
     return self;
 }
 
@@ -99,9 +100,6 @@ static NSMutableDictionary *_cushionTextAttributes;
 	
 	[_childRenderers release];
 	_childRenderers = nil;
-
-    if ( _item == nil && ![self isLeaf] )
-		[self createChildRenderers];
 }
 
 - (void) setCushionColor: (NSColor*) color
@@ -133,8 +131,8 @@ static NSMutableDictionary *_cushionTextAttributes;
     
     //if the rect is too small, we do nothing
     {
-        NSRect rectPoints = [_view convertRectFromBackingRespectingFlipped: _rect];
-        if ( NSHeight( rectPoints ) < 1 || NSWidth( rectPoints ) < 1 )
+        const CGFloat scale = [_view backingScaleForLayout];
+        if ( NSHeight( _rect ) / scale < 1 || NSWidth( _rect ) / scale < 1 )
             return;
     }
     
@@ -192,7 +190,35 @@ static NSMutableDictionary *_cushionTextAttributes;
 
 - (void) drawCushionInBitmap: (NSBitmapImageRep*) bitmap
 {
-    [self drawCushionInBitmap: bitmap parentCushion: nil cushionHeightFactor: 0.5f];
+    // First, in draw order: work out each cushion's surface and ask for its color,
+    // which hands out the colors of the file kinds in the order they get seen.
+    TMVLeafList leaves = { NULL, 0, 0 };
+    [self collectLeaves: &leaves parentCushion: nil cushionHeightFactor: 0.5f];
+
+    if ( leaves.count == 0 || [_view backgroundRenderCancelled] )
+    {
+        free( leaves.renderers );
+        return;
+    }
+
+    // Then the pixels: every leaf covers its own part of the bitmap, so they can run side by side.
+    unsigned char *pixels = [bitmap bitmapData];
+    const NSInteger bytesPerRow = [bitmap bytesPerRow];
+    TMVCushionRenderer **renderers = leaves.renderers;
+    const NSUInteger leafCount = leaves.count;
+    const NSUInteger batchSize = 64;
+    const NSUInteger batchCount = ( leafCount + batchSize - 1 ) / batchSize;
+
+    dispatch_apply( batchCount, dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^( size_t batch ) {
+        @autoreleasepool
+        {
+            const NSUInteger end = MIN( ( batch + 1 ) * batchSize, leafCount );
+            for ( NSUInteger i = batch * batchSize; i < end; i++ )
+                [renderers[i] renderCushionInPixels: pixels bytesPerRow: bytesPerRow];
+        }
+    });
+
+    free( leaves.renderers );
 }
 
 - (BOOL) isLeaf
@@ -270,15 +296,18 @@ static NSMutableDictionary *_cushionTextAttributes;
 
 @implementation TMVItem( Private )
 
-- (void) drawCushionInBitmap: (NSBitmapImageRep*) bitmap parentCushion: (TMVCushionRenderer*) parentCushion cushionHeightFactor: (float) heightFactor
+- (void) collectLeaves: (TMVLeafList*) leaves parentCushion: (TMVCushionRenderer*) parentCushion cushionHeightFactor: (float) heightFactor
 {
+    if ( [_view backgroundRenderCancelled] )
+        return;
+
     //if the rect is too small, we do nothing
     {
-        NSRect rectPoints = [_view convertRectFromBackingRespectingFlipped: _rect];
-        if ( NSHeight( rectPoints) < 1 || NSWidth( rectPoints ) < 1 )
+        const CGFloat scale = [_view backingScaleForLayout];
+        if ( NSHeight( _rect ) / scale < 1 || NSWidth( _rect ) / scale < 1 )
             return;
     }
-    
+
     if ( parentCushion != NULL )
     {
         [_cushionRenderer setSurface: [parentCushion surface]];
@@ -290,52 +319,56 @@ static NSMutableDictionary *_cushionTextAttributes;
         if ( _delegate != nil && [_delegate respondsToSelector: @selector(treeMapView: willDisplayItem: withRenderer:)] )
             [_delegate treeMapView: _view willDisplayItem: _item withRenderer: self];
 
-		[_cushionRenderer renderCushionInBitmap: bitmap];
-		//[_cushionRenderer renderCushionInBitmapPPC603: bitmap];
-
-        /*        if ( NSWidth(_rect) > 60 && NSHeight(_rect) > 20 )
+        if ( leaves->count == leaves->capacity )
         {
-            float r, g, b, a;
-            [_cushionColor getRed: &r green: &g blue: &b alpha: &a];
-
-            r /= 2;
-            g /= 2;
-            b /= 2;
-
-            NSColor *color = [NSColor colorWithCalibratedRed: r green: g blue: b alpha: a];
-
-            //            [_cushionTextAttributes setObject: [NSFont fontWithName:@"Times" size: 24]
-            //                        forKey:NSFontAttributeName];
-            [_cushionTextAttributes setObject: color forKey:NSForegroundColorAttributeName];
-            [[_item displayName] drawInRect: _rect withAttributes: _cushionTextAttributes];
+            leaves->capacity = leaves->capacity != 0 ? leaves->capacity * 2 : 1024;
+            leaves->renderers = realloc( leaves->renderers, leaves->capacity * sizeof(TMVCushionRenderer*) );
         }
-        */
+        leaves->renderers[leaves->count++] = _cushionRenderer;
     }
     else
     {
-        unsigned i;
-        for ( i = 0; i < [_childRenderers count]; i++ )
-            [[_childRenderers objectAtIndex:i] drawCushionInBitmap: bitmap parentCushion: _cushionRenderer cushionHeightFactor: (heightFactor * CUSHION_SCALE_FACTOR)];
+        for ( TMVItem *child in _childRenderers )
+            [child collectLeaves: leaves parentCushion: _cushionRenderer cushionHeightFactor: (heightFactor * CUSHION_SCALE_FACTOR)];
     }
 }
 
 - (void) layoutChilds
 {
-//	NSAutoreleasePool *localAutorelasePool = [[NSAutoreleasePool alloc] init];
-	
-    if ( _childRenderers == nil )
-        [self createChildRenderers];
+    if ( [_view backgroundRenderCancelled] )
+        return;
 
-    NSMutableArray *rows = [[NSMutableArray alloc] init];   //doubles, fraction of total height for each row
-    NSMutableArray *childsPerRow = [[NSMutableArray alloc] init]; //ints, number of childs per row
-    NSMutableArray *childWidths = [[NSMutableArray alloc] initWithCapacity: [_childRenderers count]]; //doubles, fraction of total width for each child
+    const NSUInteger childCount = [_dataSource treeMapView: _view numberOfChildrenOfItem: _item];
+
+    NSArray *oldRenderers = _childRenderers;
+    _childRenderers = [[NSMutableArray alloc] init];
+
+    if ( childCount == 0 )
+    {
+        [oldRenderers release];
+        return;
+    }
+
+    id *items = malloc( childCount * sizeof(id) );
+    double *weights = malloc( childCount * sizeof(double) );
+    double *rows = malloc( childCount * sizeof(double) );          //fraction of total height for each row
+    NSUInteger *childsPerRow = malloc( childCount * sizeof(NSUInteger) );
+    double *childWidths = malloc( childCount * sizeof(double) );   //fraction of total width for each child
+
+    for ( NSUInteger i = 0; i < childCount; i++ )
+    {
+        items[i] = [_dataSource treeMapView: _view child: i ofItem: _item];
+        NSAssert( items[i] != nil, @"data source returned nil as child item" );
+        weights[i] = [_dataSource treeMapView: _view weightByItem: items[i]];
+    }
 
     BOOL horizontalRows;
-
-    [self arrangeChildsOnRows: rows
-                 childsPerRow: childsPerRow
-                  childWidths: childWidths
-                 rowsAreHoriz: &horizontalRows];
+    NSUInteger rowCount = [self arrangeChildsOnRows: rows
+                                       childsPerRow: childsPerRow
+                                        childWidths: childWidths
+                                            weights: weights
+                                         childCount: childCount
+                                       rowsAreHoriz: &horizontalRows];
 
     const int parentWidth = (int) /*roundf*/( horizontalRows ? NSWidth(_rect) : NSHeight(_rect) );
     const int parentHeight = (int) /*roundf*/( horizontalRows ? NSHeight(_rect) : NSWidth(_rect) );
@@ -344,25 +377,27 @@ static NSMutableDictionary *_cushionTextAttributes;
     const int parentRight = (int) /*roundf*/( horizontalRows ? NSMaxX(_rect) : NSMaxY(_rect) );
     const int parentLeft = (int) /*roundf*/( horizontalRows ? NSMinX(_rect) : NSMinY(_rect) );
 
-    unsigned childIndex = 0;
-    unsigned row = 0;
+    const CGFloat scale = [_view backingScaleForLayout];
+    const NSUInteger oldCount = [oldRenderers count];
+    NSUInteger oldIndex = 0;
+    NSUInteger childIndex = 0;
 
     int top = horizontalRows ? NSMinY(_rect) : NSMinX(_rect);
 
-    for ( row = 0; row < [rows count]; row++ )
+    for ( NSUInteger row = 0; row < rowCount; row++ )
     {
-        int bottom = top + roundf( [[rows objectAtIndex: row] doubleValue] * parentHeight );
+        int bottom = top + roundf( rows[row] * parentHeight );
         //if this is the last row, make sure it's bottom is the same as our bottom (get rid of rounding errors)
-        if ( bottom > parentBottom || row == [rows count] - 1 )
+        if ( bottom > parentBottom || row == rowCount - 1 )
             bottom = parentBottom;
 
         int left = parentLeft;
 
-        for ( unsigned column = 0; column < [[childsPerRow objectAtIndex: row] unsignedIntValue]; column++, childIndex++)
+        for ( NSUInteger column = 0; column < childsPerRow[row]; column++, childIndex++ )
         {
-            int right = left + roundf( [[childWidths objectAtIndex: childIndex] doubleValue] * parentWidth );
+            int right = left + roundf( childWidths[childIndex] * parentWidth );
             //if this is last child in the current row, make sure it's rect ends with our rect
-            if ( right > parentRight || column == [[childsPerRow objectAtIndex: row] unsignedIntValue] - 1)
+            if ( right > parentRight || column == childsPerRow[row] - 1 )
                 right = parentRight;
 
             NSRect rcChild;
@@ -381,9 +416,23 @@ static NSMutableDictionary *_cushionTextAttributes;
                 rcChild.size.height = right - left;
             }
 
-            TMVItem *childRenderer= [_childRenderers objectAtIndex: childIndex];
+            TMVItem *reusable = nil;
+            if ( oldIndex < oldCount && [[oldRenderers objectAtIndex: oldIndex] item] == items[childIndex] )
+                reusable = [oldRenderers objectAtIndex: oldIndex++];
 
-            [childRenderer calcLayout: rcChild];
+            if ( NSWidth( rcChild ) / scale >= 1 && NSHeight( rcChild ) / scale >= 1 )
+            {
+                TMVItem *childRenderer = reusable;
+                if ( childRenderer == nil )
+                    childRenderer = [[[TMVItem alloc] initWithDataSource: _dataSource
+                                                                delegate: _delegate
+                                                            renderedItem: items[childIndex]
+                                                             treeMapView: _view] autorelease];
+                [_childRenderers addObject: childRenderer];
+                [childRenderer calcLayout: rcChild];
+            }
+            else
+                [reusable setHidden]; //the view may still hold on to it
 
             left = right;
         }
@@ -391,92 +440,89 @@ static NSMutableDictionary *_cushionTextAttributes;
         top = bottom;
     }
 
-    [rows release];
-    [childsPerRow release];
-    [childWidths release];
-	
-//	[localAutorelasePool release];
+    free( items );
+    free( weights );
+    free( rows );
+    free( childsPerRow );
+    free( childWidths );
+
+    [oldRenderers release];
 }
 
-- (void) arrangeChildsOnRows: (NSMutableArray*) rows
-                childsPerRow: (NSMutableArray*) childsPerRow
-                 childWidths: (NSMutableArray*) childWidths
-                rowsAreHoriz: (BOOL*) horizontal
+- (void) setHidden
 {
-    NSUInteger childCount = [_childRenderers count];
-    NSUInteger i;
-	NSNumber *num = nil;
-	
+    _rect = NSZeroRect;
+    [_cushionRenderer setRect: NSZeroRect];
+}
+
+- (NSUInteger) arrangeChildsOnRows: (double*) rows
+                      childsPerRow: (NSUInteger*) childsPerRow
+                       childWidths: (double*) childWidths
+                           weights: (const double*) weights
+                        childCount: (NSUInteger) childCount
+                      rowsAreHoriz: (BOOL*) horizontal
+{
     if ( [self weight] == 0 )
     {
-		num = [[NSNumber alloc] initWithUnsignedInt: 1];
-        [rows addObject: num/*[NSNumber numberWithUnsignedInt: 1]*/];
-		[num release];
-		
-		num = [[NSNumber alloc] initWithUnsignedInteger: childCount];
-        [childsPerRow addObject: num/*[NSNumber numberWithUnsignedInt: childCount]*/];
-		[num release];
+        rows[0] = 1;
+        childsPerRow[0] = childCount;
 
-        id standardWidth = [NSNumber numberWithDouble: 1.0/childCount];
-        for ( i = 0; i < childCount; i++ )
-            [childWidths addObject: standardWidth];
+        for ( NSUInteger i = 0; i < childCount; i++ )
+            childWidths[i] = 1.0 / childCount;
 
         *horizontal = TRUE;
+        return 1;
+    }
+
+    *horizontal = _rect.size.width >= _rect.size.height;
+
+    double width = 1;
+    if ( *horizontal )
+    {
+        if ( _rect.size.height > 0 )
+            width = (double) _rect.size.width / _rect.size.height;
     }
     else
     {
-        *horizontal = _rect.size.width >= _rect.size.height;
-
-        double width = 1;
-        if ( *horizontal )
-        {
-            if ( _rect.size.height > 0 )
-                width = (double) _rect.size.width / _rect.size.height;
-        }
-        else
-        {
-            if ( _rect.size.width > 0 )
-                width = (double) _rect.size.height / _rect.size.width;
-        }
-
-        for ( i = 0; i < childCount; )
-        {
-            NSUInteger childsUsed = 0;
-            double rowHeight = [self calculateRow: i
-                                         rowWidth: width
-                                       childsUsed: &childsUsed
-                                      childWidths: childWidths];
-
-			num = [[NSNumber alloc] initWithDouble: rowHeight];
-            [rows addObject: num/*[NSNumber numberWithDouble: rowHeight]*/];
-			[num release];
-			
-			num = [[NSNumber alloc] initWithUnsignedInteger: childsUsed];
-            [childsPerRow addObject: num/*[NSNumber numberWithUnsignedInt: childsUsed]*/];
-			[num release];
-
-            i += childsUsed;
-        }
+        if ( _rect.size.width > 0 )
+            width = (double) _rect.size.height / _rect.size.width;
     }
+
+    NSUInteger rowCount = 0;
+    for ( NSUInteger i = 0; i < childCount; )
+    {
+        NSUInteger childsUsed = 0;
+        rows[rowCount] = [self calculateRow: i
+                                   rowWidth: width
+                                 childsUsed: &childsUsed
+                                childWidths: childWidths
+                                    weights: weights
+                                 childCount: childCount];
+        childsPerRow[rowCount++] = childsUsed;
+
+        i += childsUsed;
+    }
+    return rowCount;
 }
 
 - (double) calculateRow: (NSUInteger) startChildIndex
                rowWidth: (double) rowWidth
             childsUsed : (NSUInteger*) childsUsed
-            childWidths: (NSMutableArray*) childWidths
+            childWidths: (double*) childWidths
+                weights: (const double*) weights
+             childCount: (NSUInteger) childCount
 {
     static const double minProportion = 0.4;
     const double mySize= [self weight];
     NSUInteger i;
     double sizeUsed= 0;
     double rowHeight= 0;
-    NSUInteger childCount = [_childRenderers count];
 
     *childsUsed = 0;
 
     for  ( i = startChildIndex; i < childCount; i++ )
     {
-        double  childSize = [[_childRenderers objectAtIndex: i] weight];
+        double childSize = weights[i];
         if ( childSize == 0)
         {
             NSAssert( i > startChildIndex, @"first child must not have size of 0" );
@@ -513,7 +559,7 @@ static NSMutableDictionary *_cushionTextAttributes;
     // and rowHeight is the height of the row.
 
     // We add the rest of the zero-sized childs
-    while ( i < childCount && [[_childRenderers objectAtIndex: i] weight] == 0 )
+    while ( i < childCount && weights[i] == 0 )
         i++;
 
     *childsUsed = i - startChildIndex;
@@ -523,59 +569,9 @@ static NSMutableDictionary *_cushionTextAttributes;
 	
     // Now as we know the rowHeight, we compute the widths of our children.
     for ( i = 0; i < *childsUsed; i++ )
-    {
-		double childSize = [[_childRenderers objectAtIndex: startChildIndex + i] weight];
-        double cw = childSize / rowSize;
-        //NSAssert(cw >= 0);
-
-		NSNumber *num = [[NSNumber alloc] initWithDouble: cw];
-        [childWidths addObject: num/*[NSNumber numberWithDouble: cw]*/];
-		[num release];
-    }
+        childWidths[startChildIndex + i] = weights[startChildIndex + i] / rowSize;
 
     return rowHeight;
-}
-
-- (void) createChildRenderers
-{
-    unsigned childCount = [_dataSource treeMapView: _view numberOfChildrenOfItem: _item];
-	
-	if ( _childRenderers == nil )
-		_childRenderers = [[NSMutableArray alloc] initWithCapacity: childCount];
-	
-	NSUInteger existingRendererCount = [_childRenderers count];
-	
-	//delete supernumerary renderers
-	if ( existingRendererCount > childCount )
-	{
-		[_childRenderers removeObjectsInRange: NSMakeRange( childCount, existingRendererCount - childCount)];
-		existingRendererCount = childCount;
-	}
-	
-	//init renderers
-    NSUInteger i;
-    for ( i = 0; i < childCount; i++ )
-    {
-        id childItem = [_dataSource treeMapView: _view child: i ofItem: _item];
-        NSAssert( childItem != nil, @"data source returned nil as child item" );
-		
-		//recycle existing renderer
-		if ( i < existingRendererCount )
-		{
-			[[_childRenderers objectAtIndex: i] refreshWithItem: childItem];
-		}
-		else
-		{
-			TMVItem *childRenderer = [[TMVItem alloc] initWithDataSource: _dataSource
-																delegate: _delegate
-															renderedItem: childItem
-															 treeMapView: _view];
-			
-			[_childRenderers addObject: childRenderer];
-			
-			[childRenderer release];
-		}
-    }
 }
 
 @end

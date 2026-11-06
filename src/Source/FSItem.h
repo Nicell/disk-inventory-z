@@ -130,6 +130,7 @@ typedef enum
 - (NSString *) displayFolderName; //folder name relative to root item, not "/"
 - (NSString *) displayPath; //path relative to root item, not "/"
 - (NSString *) kindName;
+- (NSString *) kindNameIfKnown; //no lazy lookup, so safe off the main thread while nothing changes the item
 
 - (NSComparisonResult) compareSize: (FSItem*) other;
 - (NSComparisonResult) compareDisplayName: (FSItem*) other;

@@ -64,6 +64,16 @@
 							 object: doc];
 
     [notificationCenter addObserver: self
+						   selector: @selector(treeWillChange:)
+							   name: FSItemsWillChangeNotification
+							 object: doc];
+
+    [notificationCenter addObserver: self
+						   selector: @selector(treeMapViewDidRender:)
+							   name: TreeMapViewDidRenderNotification
+							 object: _treeMapView];
+
+    [notificationCenter addObserver: self
 						   selector: @selector(selectedItemsChanged:)
 							   name: SelectedItemsChangedNotification
 							 object: doc];
@@ -198,12 +208,22 @@
 			color = [[[self document] fileTypeColors] colorForItem: fsItem];
 			break;
 		case FreeSpaceItem:
+			if ( ![NSThread isMainThread] )
+			{
+				color = _freeSpaceColor;
+				break;
+			}
 			// Resolve dynamic/catalog color to concrete RGB first — normalizeColor
 			// queries -colorSpace, which throws on appearance-aware catalog colors.
 			color = [[DIXPieChartView freeSpaceColor] colorUsingColorSpace: [NSColorSpace genericRGBColorSpace]];
 			color = [TMVCushionRenderer normalizeColor: color];
 			break;
 		case OtherSpaceItem:
+			if ( ![NSThread isMainThread] )
+			{
+				color = _otherSpaceColor;
+				break;
+			}
 			color = [[DIXPieChartView otherSpaceColor] colorUsingColorSpace: [NSColorSpace genericRGBColorSpace]];
 			color = [TMVCushionRenderer normalizeColor: color];
 			break;
@@ -221,8 +241,10 @@
         //so the user gets feedback for which item the menu is shown 
         NSPoint point = [event locationInWindow];
 
+        // no cell if the new picture is still being rendered
         TMVCellId cell = [_treeMapView cellIdByPoint: point inViewCoords: NO];
-        NSAssert1( cell != nil, @"No item at %@", NSStringFromPoint(point) );
+        if ( cell == nil )
+            return;
 		
 		FSItem *fsItem = [_treeMapView itemByCellId: cell];
 
@@ -340,6 +362,8 @@
 
 - (void) rebuildSpaceItemsAndReload
 {
+	[_treeMapView cancelBackgroundRender];
+
 	//create new "free space" and "other space" items
 	//(don't use [self rootItem] as we want the root, not the zoomed item)
 	FSItem *rootItem =  [[self document] rootItem];
@@ -349,7 +373,25 @@
 	[_freeSpaceItem release];
 	_freeSpaceItem = [[FSItem alloc] initAsFreeSpaceItemForParent: rootItem];
 
-    [self reloadData];
+	// what the render on the other thread can't work out by itself
+	[[self document] fileTypeColors];
+	[_freeSpaceColor release];
+	_freeSpaceColor = [[TMVCushionRenderer normalizeColor: [[DIXPieChartView freeSpaceColor] colorUsingColorSpace: [NSColorSpace genericRGBColorSpace]]] retain];
+	[_otherSpaceColor release];
+	_otherSpaceColor = [[TMVCushionRenderer normalizeColor: [[DIXPieChartView otherSpaceColor] colorUsingColorSpace: [NSColorSpace genericRGBColorSpace]]] retain];
+
+    [_treeMapView reloadDataInBackground];
+}
+
+- (void) treeWillChange: (NSNotification*) notification
+{
+	[_treeMapView cancelBackgroundRender];
+}
+
+- (void) treeMapViewDidRender: (NSNotification*) notification
+{
+	[self onDocumentSelectionChanged];
+	[self selectedItemsChanged: nil];
 }
 
 - (void) zoomedItemChanged: (NSNotification*) notification
@@ -402,6 +444,8 @@
 
 - (void) windowWillClose: (NSNotification*) notification
 {
+	[_treeMapView cancelBackgroundRender];
+
 	[[self document] removeObserver: self forKeyPath: DocKeySelectedItem];
 	
     [[NSNotificationCenter defaultCenter] removeObserver: self];

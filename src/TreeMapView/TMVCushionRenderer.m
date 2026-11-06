@@ -96,6 +96,9 @@ SEL g_renderFunction;	//optimized rendering function depending on processor feat
 
 - (void) setColor: (NSColor*) newColor
 {
+	if ( newColor == _color )
+		return;
+
 	//we need the color in the RGB color space
 	if ( ![[newColor colorSpace] isEqual: [NSColorSpace genericRGBColorSpace]] )
 		newColor = [newColor colorUsingColorSpace: [NSColorSpace genericRGBColorSpace]];
@@ -157,16 +160,19 @@ Unoptimized:
 
 - (void) renderCushionInBitmapGeneric: (NSBitmapImageRep*) bitmap
 {
+    NSAssert( NSMaxY([self rect]) <= [bitmap pixelsHigh], @"_rect exeeds bitmap height" );
+    NSAssert( NSMaxX([self rect]) <= [bitmap pixelsWide], @"_rect exeeds bitmap width" );
+    NSAssert( [bitmap bitsPerSample] == 8, @"expecting bitmap to have 8 bits per RGB component" );
+    NSAssert( ![bitmap hasAlpha], @"not expecting the bitmap to have alpha component");
+
+    [self renderCushionInPixels: [bitmap bitmapData] bytesPerRow: [bitmap bytesPerRow]];
+}
+
+- (void) renderCushionInPixels: (unsigned char*) pixels bytesPerRow: (NSInteger) bytesPerRow
+{
     NSRect rect = [self rect];
     const CGFloat *surface = [self surface];
     NSColor *baseColor = [self color];
-
-    //we're expecting a bitmap which is at least as big as our rectangle,
-    //has a 24 Bit color depth in RGB space (3 * 8 bytes) with no alpha channel
-    NSAssert( NSMaxY(rect) <= [bitmap pixelsHigh], @"_rect exeeds bitmap height" );
-    NSAssert( NSMaxX(rect) <= [bitmap pixelsWide], @"_rect exeeds bitmap width" );
-    NSAssert( [bitmap bitsPerSample] == 8, @"expecting bitmap to have 8 bits per RGB component");
-    NSAssert( ![bitmap hasAlpha], @"not expecting the bitmap to have alpha component");
 
     // Cushion parameters
     const double Ia = 0.15;  //ambient light
@@ -188,9 +194,6 @@ Unoptimized:
     const CGFloat colG = [baseColor greenComponent];
     const CGFloat colB = [baseColor blueComponent];
 
-    unsigned char *pixels = [bitmap bitmapData];
-    NSInteger bytesPerRow = [bitmap bytesPerRow];
-	
     int ix, iy;
 	int yStart = NSMinY(rect);
 	int yEnd = NSMaxY(rect);
@@ -211,7 +214,7 @@ Unoptimized:
             double brightness = Is * cosa;
             brightness = brightness < 0 ? Ia : (brightness + Ia);
 
-            NSAssert(brightness <= 1.0, @"brightness must be <=1" );
+            NSAssert(brightness <= 1.0 + 1e-9, @"brightness must be <=1" ); // a surface facing the light rounds to just above 1
 
             brightness *= 2.5 / BASE_BRIGHTNESS;
 
@@ -219,7 +222,9 @@ Unoptimized:
             CGFloat green = colG * brightness;
             CGFloat blue = colB * brightness;
 
-            [TMVCushionRenderer normalizeColorRed: &red green: &green blue: &blue];
+            // most pixels are in range, and this loop runs for every pixel
+            if ( red > MAX_RGB_VALUE || green > MAX_RGB_VALUE || blue > MAX_RGB_VALUE )
+                [TMVCushionRenderer normalizeColorRed: &red green: &green blue: &blue];
 
             /*
              //with QuickDraw, this would be simplier:

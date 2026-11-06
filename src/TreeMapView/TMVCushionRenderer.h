@@ -37,6 +37,7 @@
 - (void) addRidgeByHeightFactor: (float) heightFactor;
 
 - (void) renderCushionInBitmap: (NSBitmapImageRep*) bitmap;
+- (void) renderCushionInPixels: (unsigned char*) pixels bytesPerRow: (NSInteger) bytesPerRow; //thread-safe if the rects don't overlap
 - (void) renderCushionInBitmapGeneric: (NSBitmapImageRep*) bitmap;
 #ifdef __ppc__
 - (void) renderCushionInBitmapPPC603: (NSBitmapImageRep*) bitmap; //PowerPC optimzed version (603+) double precision

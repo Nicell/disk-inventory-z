@@ -662,6 +662,11 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 		[[self parent] childChanged: self oldSize: oldSize newSize: size];
 }
 
+- (NSString *) kindNameIfKnown
+{
+	return [self isSpecialItem] ? @"" : _kindName;
+}
+
 //get display string for kind ("Application", "Simple Text Document", ...)
 - (NSString *) kindName
 {

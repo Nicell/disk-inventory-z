@@ -15,6 +15,8 @@
 
 typedef TMVItem* TMVCellId;
 
+extern NSString *TreeMapViewDidRenderNotification;
+
 @interface TreeMapView : NSView <NSViewToolTipOwner>
 {
     TMVItem *_rootItemRenderer;
@@ -24,6 +26,14 @@ typedef TMVItem* TMVCellId;
     NSSet *_additionalSelectedItems;
     NSMutableArray *_additionalSelectedRenderers;
     NSEventModifierFlags _selectionClickModifiers;
+
+    // background rendering, see -reloadDataInBackground
+    BOOL _renderInProgress;
+    BOOL _renderAbandoned;
+    _Atomic BOOL _renderCancelled;
+    unsigned _renderGeneration;
+    dispatch_group_t _renderGroup;
+    _Atomic CGFloat _layoutScale;
     TMVItem *_touchedRenderer;
     NSBitmapImageRep *_cachedContent;
 	id _zoomer;
@@ -31,6 +41,16 @@ typedef TMVItem* TMVCellId;
 
 - (void) invalidateCanvasCache; //just delete the cached view content
 - (void) reloadData;
+- (void) reloadDataInBackground;
+	//lays out and draws on another thread while the old picture stays up, then posts
+	//TreeMapViewDidRenderNotification. Until then there are no cells to hit or select.
+	//The data source and delegate get called on that thread, so nothing they read may
+	//change until the render is done: call -cancelBackgroundRender before changing it.
+- (void) cancelBackgroundRender;
+	//returns once the other thread has stopped touching data source and delegate.
+	//If no reload follows, the next draw does one.
+- (BOOL) backgroundRenderCancelled; //any thread
+- (CGFloat) backingScaleForLayout; //any thread
 - (void) reloadAndPerformZoomIntoItem: (NSArray*) path;
 	//before relaod, a zoom in effect is shown
 	//"path" identifies the data item in which will be zoomed;

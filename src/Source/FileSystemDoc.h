@@ -54,6 +54,7 @@
     FSItem *_selectedItem;	//the primary selection: the last item the user selected
     NSArray *_selectedItems;	//everything selected, including _selectedItem
     BOOL _updatingSelectedItems;
+    BOOL _movingItemsToTrash;
     NSMutableArray *_zoomStack;
     NSMutableDictionary *_fileKindStatistics;	//dictionary: kind name -> FileKindStatistic
 	NSMutableDictionary *_viewOptions;
@@ -121,7 +122,11 @@
 // Moves all items in one go and returns how many were moved. Items inside of another
 // listed item come along with it. Those that fail stay selected and in the tree.
 - (NSUInteger) moveItemsToTrash: (NSArray*) items errors: (NSArray**) errors;
-- (BOOL) moveItemToTrash: (FSItem*) item error:(NSError **)error;//will post a "FSItemsChangedNotification"
+// The same, but the file operations run on another thread. Only one at a time. The
+// items stay in the tree until "completion" gets called on the main thread.
+- (void) moveItemsToTrashInBackground: (NSArray*) items
+						   completion: (void (^)( NSUInteger movedCount, NSArray *errors )) completion;
+- (BOOL) isMovingItemsToTrash;//will post a "FSItemsChangedNotification"
 - (void) refreshItem: (FSItem*) item;//will post a "FSItemsChangedNotification"
 
 - (FSItem*) zoomedItem;
@@ -153,6 +158,7 @@ extern NSString *DocKeySelectedItem;
 extern NSString *GlobalSelectionChangedNotification; //userInfo contains new and old selection
 extern NSString *SelectedItemsChangedNotification; //the set of selected items has changed; userInfo is nil
 extern NSString *ZoomedItemChangedNotification; //userInfo contains new and old zoomed item
+extern NSString *FSItemsWillChangeNotification; //sent before the tree or what's derived from it changes; userInfo is nil
 extern NSString *FSItemsChangedNotification; //some items are modified, deleted or added; userInfo is nil
 extern NSString *ViewOptionChangedNotification; //the name of the changed option is stored in userInfo for key ChangedViewOption (see next line)
 extern NSString *ChangedViewOption;

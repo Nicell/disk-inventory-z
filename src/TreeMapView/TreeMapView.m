@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 //
 //  TreeMapView.h
 //  TreeMapView
@@ -21,12 +22,17 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 @interface TreeMapView(Private)
 
 - (void) drawInCache;
+- (void) setSelectedRenderer: (TMVItem*) renderer;
+- (void) setTouchedRenderer: (TMVItem*) renderer;
+- (void) finishBackgroundRender: (TMVItem*) root bitmap: (NSBitmapImageRep*) bitmap generation: (unsigned) generation;
 - (void) allocContentCache;
 - (void) deallocContentCache;
 - (TMVItem*) findTMVItemByPathToDataItem: (NSArray*) path;
 - (void) performZoom: (ZoomInfo*) zoomInfo;
 
 @end
+
+NSString *TreeMapViewDidRenderNotification = @"TreeMapViewDidRender";
 
 //================ implementation TreeMapView ======================================================
 
@@ -93,6 +99,11 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
     [_additionalSelectedRenderers release];
     [_additionalSelectedItems release];
 
+    [_selectedRenderer release];
+    [_touchedRenderer release];
+    if ( _renderGroup != NULL )
+        dispatch_release( _renderGroup );
+
     [super dealloc];
 }
 
@@ -151,8 +162,31 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 
 - (void) drawRect: (NSRect) rect
 {
+    // a canceled render that no reload followed
+    if ( _renderAbandoned && !_renderInProgress )
+        [self reloadData];
+
+    // the old picture stays up until the new one is ready
+    if ( _renderInProgress )
+    {
+        if ( _cachedContent != nil )
+        {
+            NSImage *image = [_cachedContent suitableImageForView: self];
+            NSSize imageSize = [image size];
+            [image drawInRect: [self bounds]
+                     fromRect: NSMakeRect( 0, 0, imageSize.width, imageSize.height )
+                    operation: NSCompositingOperationCopy
+                     fraction: 1
+               respectFlipped: YES
+                        hints: nil];
+        }
+        else
+            NSDrawWindowBackground( rect );
+        return;
+    }
+
     // anything to draw?
-    if ( _rootItemRenderer == nil || [_rootItemRenderer childCount] == 0 )
+    if ( _rootItemRenderer == nil || [dataSource treeMapView: self numberOfChildrenOfItem: nil] == 0 )
         return;
     
 	//If the window is being resized, we just scale the image we have
@@ -235,6 +269,9 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 	
 - (void) mouseDown: (NSEvent*) theEvent
 {
+    if ( _renderInProgress )
+        return;
+
     NSPoint point = [theEvent locationInWindow];
     point = [self convertPoint: point fromView: nil];
     point.y--;
@@ -249,7 +286,7 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
     // A click on the selected item still counts: with a multiple selection,
     // it narrows the selection down or takes the item out again.
     _selectionClickModifiers = [theEvent modifierFlags] & ( NSEventModifierFlagCommand | NSEventModifierFlagShift );
-    _selectedRenderer = renderer;
+    [self setSelectedRenderer: renderer];
 
     //post notification
     [[NSNotificationCenter defaultCenter] postNotificationName: TreeMapViewSelectionDidChangedNotification object: self userInfo: nil];
@@ -339,7 +376,7 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
         return;
     }
 
-    _touchedRenderer = renderer;
+    [self setTouchedRenderer: renderer];
 
     id touchedItem = (_touchedRenderer == nil) ? nil : [_touchedRenderer item];
 
@@ -394,7 +431,7 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 {
     if ( cellId != _selectedRenderer )
     {
-        _selectedRenderer = cellId;
+        [self setSelectedRenderer: cellId];
 
         //post notification
         [[NSNotificationCenter defaultCenter] postNotificationName: TreeMapViewSelectionDidChangedNotification object: self userInfo: nil];
@@ -416,7 +453,7 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 	{
 		// The item is too small to have a renderer, so there is nothing to
 		// highlight. Its selection is still valid, so post no notification.
-		_selectedRenderer = nil;
+		[self setSelectedRenderer: nil];
 		[self setNeedsDisplay: YES];
 	}
 }
@@ -451,17 +488,148 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 
 - (void) invalidateCanvasCache //just delete the cached view content
 {
+    [self cancelBackgroundRender];
     [self deallocContentCache];
+}
+
+- (CGFloat) backingScaleForLayout
+{
+    if ( [NSThread isMainThread] )
+    {
+        CGFloat scale = [self convertSizeToBacking: NSMakeSize( 1, 1 )].width;
+        atomic_store( &_layoutScale, scale > 0 ? scale : 1 );
+    }
+    return atomic_load( &_layoutScale );
+}
+
+- (BOOL) backgroundRenderCancelled
+{
+    return atomic_load_explicit( &_renderCancelled, memory_order_relaxed );
+}
+
+- (void) setSelectedRenderer: (TMVItem*) renderer
+{
+    [renderer retain];
+    [_selectedRenderer release];
+    _selectedRenderer = renderer;
+}
+
+- (void) setTouchedRenderer: (TMVItem*) renderer
+{
+    [renderer retain];
+    [_touchedRenderer release];
+    _touchedRenderer = renderer;
+}
+
+- (void) cancelBackgroundRender
+{
+    if ( !_renderInProgress )
+        return;
+
+    atomic_store( &_renderCancelled, YES );
+    dispatch_group_wait( _renderGroup, DISPATCH_TIME_FOREVER );
+    atomic_store( &_renderCancelled, NO );
+
+    _renderGeneration++;
+    _renderInProgress = NO;
+    _renderAbandoned = YES;
+    [self setNeedsDisplay: YES];
+}
+
+- (void) reloadDataInBackground
+{
+    NSAssert( [NSThread isMainThread], @"call this on the main thread" );
+
+    NSRect backingBounds = [self convertRectToBackingRespectingFlipped: [self bounds]];
+    if ( [self zoomingInProgress] || NSIsEmptyRect( backingBounds ) )
+    {
+        [self reloadData];
+        return;
+    }
+
+    [self cancelBackgroundRender];
+    _renderAbandoned = NO;
+
+    [self setSelectedRenderer: nil];
+    [self setTouchedRenderer: nil];
+    [_additionalSelectedRenderers release];
+    _additionalSelectedRenderers = nil;
+    [self removeAllToolTips];
+
+    // These renderers point to items that may be gone already, so nothing
+    // may reach them any more. Taking them away now also makes cell lookups
+    // come up empty until the new ones are ready.
+    TMVItem *oldRoot = _rootItemRenderer;
+    _rootItemRenderer = nil;
+
+    [self backingScaleForLayout];
+
+    NSBitmapImageRep *bitmap = [[NSBitmapImageRep imageRepCompatibleWithView: self] retain];
+
+    const unsigned generation = ++_renderGeneration;
+    _renderInProgress = YES;
+
+    if ( _renderGroup == NULL )
+        _renderGroup = dispatch_group_create();
+
+    dispatch_group_async( _renderGroup, dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^{
+        @autoreleasepool
+        {
+            [oldRoot release];
+
+            TMVItem *root = [[TMVItem alloc] initWithDataSource: dataSource
+                                                       delegate: delegate
+                                                   renderedItem: nil
+                                                    treeMapView: self];
+            [root calcLayout: backingBounds];
+            [root drawCushionInBitmap: bitmap];
+
+            if ( [self backgroundRenderCancelled] )
+            {
+                [root release];
+                [bitmap release];
+                return;
+            }
+
+            dispatch_async( dispatch_get_main_queue(), ^{
+                [self finishBackgroundRender: root bitmap: bitmap generation: generation];
+                [root release];
+                [bitmap release];
+            });
+        }
+    });
+}
+
+- (void) finishBackgroundRender: (TMVItem*) root bitmap: (NSBitmapImageRep*) bitmap generation: (unsigned) generation
+{
+    if ( generation != _renderGeneration || !_renderInProgress )
+        return;
+
+    _renderInProgress = NO;
+
+    [_rootItemRenderer release];
+    _rootItemRenderer = [root retain];
+
+    [_cachedContent release];
+    _cachedContent = [bitmap retain];
+
+    [self addToolTipRect: [self bounds] owner: self userData: nil];
+    [self setNeedsDisplay: YES];
+
+    [[NSNotificationCenter defaultCenter] postNotificationName: TreeMapViewDidRenderNotification object: self];
 }
 
 - (void) reloadData
 {
     NSAssert(![self zoomingInProgress], @"cannot reload tree map while zooming is in progress");
+
+    [self cancelBackgroundRender];
+    _renderAbandoned = NO;
     
     [self deallocContentCache];
 
-    _selectedRenderer = nil;
-    _touchedRenderer = nil;
+    [self setSelectedRenderer: nil];
+    [self setTouchedRenderer: nil];
     [_additionalSelectedRenderers release];
     _additionalSelectedRenderers = nil;
 
@@ -484,6 +652,8 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 - (void) reloadAndPerformZoomIntoItem: (NSArray*) path
 {
     NSAssert(![self zoomingInProgress], @"cannot reload tree map while zooming is in progress");
+
+    [self cancelBackgroundRender];
     
     //path must at least contain one item (the root item)
 	NSAssert( [path count] > 0, @"path must contain at least 1 component" );
@@ -537,6 +707,8 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 - (void) reloadAndPerformZoomOutofItem: (NSArray*) path
 {
     NSAssert(![self zoomingInProgress], @"cannot reload tree map while zooming is in progress");
+
+    [self cancelBackgroundRender];
     
     //path must at least contain one item (the root item)
 	NSAssert( [path count] > 0, @"path must contain at least 1 component" );

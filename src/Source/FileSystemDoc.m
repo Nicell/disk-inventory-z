@@ -16,6 +16,7 @@
 //
 
 #import "FileSystemDoc.h"
+#include <os/lock.h>
 #import "NSURL-Extensions.h"
 #import "MainWindowController.h"
 #import "DrivesPanelController.h"
@@ -153,6 +154,10 @@ NSString *CollectFileKindStatisticsCanceledException = @"CollectFileKindStatisti
 
 - (void) recalculateTotalSize;
 - (BOOL) replaceSelectedItems: (NSArray*) items;
+- (void) treeWillChange;
+- (NSArray*) itemsToMoveToTrashFrom: (NSArray*) items;
+- (NSArray*) localFlagsForURLs: (NSArray*) urls;
+- (NSUInteger) applyTrashResults: (NSArray*) results forItems: (NSArray*) itemsToMove errors: (NSArray**) errors;
 
 - (NSMutableDictionary*) viewOptions;
 
@@ -171,6 +176,7 @@ NSString *GlobalSelectionChangedNotification = @"GlobalSelectionChanged";
 NSString *SelectedItemsChangedNotification = @"SelectedItemsChanged";
 NSString *ZoomedItemChangedNotification = @"ZoomedItemChanged";
 NSString *FSItemsChangedNotification = @"FSItemsChanged";
+NSString *FSItemsWillChangeNotification = @"FSItemsWillChange";
 NSString *ViewOptionChangedNotification = @"ViewOptionsChangedNotification";
 NSString *ChangedViewOption = @"ChangedViewOption";
 NSString *NewItem = @"NewItem";
@@ -363,6 +369,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) startBackgroundScanForURL: (NSURL*) url
 {
+	[self treeWillChange];
+
     NSParameterAssert( [NSThread isMainThread] );
     if ( _scanInProgress )
     {
@@ -716,6 +724,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) setShowPhysicalFileSize: (BOOL) show
 {
+	[self treeWillChange];
+
 	[[self viewOptions] setShowPhysicalFileSize: show];
 	
 	[self recalculateTotalSize];
@@ -731,6 +741,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) setShowPackageContents: (BOOL) show
 {
+	[self treeWillChange];
+
     show = (show == 0) ? NO : YES;
     if ( show == [[self viewOptions] showPackageContents] )
 		return;
@@ -789,6 +801,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) setShowFreeSpace: (BOOL) show
 {
+	[self treeWillChange];
+
 	[[self viewOptions] setShowFreeSpace: show];
 	
 	[self postViewOptionChangedNotificationForOption: ShowFreeSpace];
@@ -801,6 +815,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) setShowOtherSpace: (BOOL) show
 {
+	[self treeWillChange];
+
 	[[self viewOptions] setShowOtherSpace: show];
 	
 	[self postViewOptionChangedNotificationForOption: ShowOtherSpace];
@@ -843,89 +859,15 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
     return _rootItem;
 }
 
-- (BOOL) moveItemToTrash: (FSItem*) item error:(NSError **)error
+- (void) treeWillChange
 {
-	NSParameterAssert( item != nil && item != [self zoomedItem] && ![item isSpecialItem] );
-	
-	// file moved to trash (it's new URL)
-    NSURL *newFileInTrash = nil;
-    // FSItem representing the trash folder
-    FSItem *trashItem = nil;
-
-	//As the trash visible to the user only shows trashed files/folders on local volumes,
-	//we delete files/folders on network volumes (like the Finder does).
-	//If we would perform a NSWorkspaceRecycleOperation on a file/folder residing on a network volume,
-	//it would be moved to .Trashes/.<user-id> on that volume.
-	
-	if ( [[item fileURL] isLocalVolume] )
-	{
-        NSFileManager *fm = [NSFileManager defaultManager];
-        
-        NSURL *trashURL = [fm URLForDirectory:NSTrashDirectory inDomain:NSUserDomainMask appropriateForURL:[item fileURL] create:NO error:nil];
-        
-        if ( trashURL != nil )
-            trashItem = [[self rootItem] findItemByAbsolutePath: [trashURL path] allowAncestors: NO];
-        
-        // move file/folder to trash
-        if ( ![fm trashItemAtURL:[item fileURL] resultingItemURL:&newFileInTrash error:error] )
-            return NO;
-	}
-	else
-    {
-        // delete file
-        if ( ![[NSFileManager defaultManager] removeItemAtURL:[item fileURL] error: error] )
-               return NO;
-    }
-	
-	//if the selected item should be removed, invalidate our selection
-	if ( [self selectedItem] == item )
-		[self setSelectedItem: nil];
-    
-    // keep data model in sync: remove from folder item, add to trash item, update file kind statistic
-	
-	// remove the item from the parent's list
-	FSItem *parent = [item parent];
-	NSAssert( parent != nil, @"root item shouldn't be deletable" );
-	
-	//retain and autorelease "item", so it will be accessible till all is done
-	[[item retain] autorelease];
-	
-	[parent removeChild: item updateParent: YES];
-	
-	//keep kind statistic in sync
-	[self willChangeValueForKey: @"kindStatistics"];
-	[self removeItemFromFileKindStatistic: item includingChilds: YES];
-	
-	//the users's trash may have been created with the trash operation (if item is not on the same volume as the user's home)
-	//in this case, we won't see the trashed item, as we are not showing the trash folder currently 
-	if ( trashItem != nil && newFileInTrash != nil )
-    {
-        //keep the size of "itemTrashed", but associate with the valid URL
-        [item setFileURL: newFileInTrash];
-
-        [trashItem insertChild: item updateParent: YES];
-        
-        //keep kind statistic in sync
-        [self addItemToFileKindStatistic: item includingChilds: YES];
-    }
-    
-	//"checkTrash" may have editied the kind statistic, so notify observers but now
-	[self didChangeValueForKey: @"kindStatistics"];
-	
-	//notify observers of the change
-	[[NSNotificationCenter defaultCenter] postNotificationName: FSItemsChangedNotification object: self];
-	
-	//try to set "parent" as new selection
-	if ( parent != [self zoomedItem] )
-		[self setSelectedItem: parent];
-	
-	return YES;
+	[[NSNotificationCenter defaultCenter] postNotificationName: FSItemsWillChangeNotification object: self];
 }
 
-- (NSUInteger) moveItemsToTrash: (NSArray*) items errors: (NSArray**) errors
+// A folder and something inside of it may both be selected. Moving the
+// folder takes care of both, and the inner move would just fail.
+- (NSArray*) itemsToMoveToTrashFrom: (NSArray*) items
 {
-	// A folder and something inside of it may both be selected. Moving the
-	// folder takes care of both, and the inner move would just fail.
 	NSSet *itemSet = [NSSet setWithArray: items];
 	NSMutableArray *itemsToMove = [NSMutableArray arrayWithCapacity: [items count]];
 	for ( FSItem *item in items )
@@ -940,28 +882,18 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 		if ( !ancestorIsSelected )
 			[itemsToMove addObject: item];
 	}
+	return itemsToMove;
+}
 
-	NSUInteger count = [itemsToMove count];
-	NSMutableArray *errorList = [NSMutableArray array];
-	if ( count == 0 )
-	{
-		if ( errors != NULL )
-			*errors = errorList;
-		return 0;
-	}
-
-	// FSItem isn't thread-safe, so collect what the workers need up front.
-	NSMutableArray *urls = [NSMutableArray arrayWithCapacity: count];
-	BOOL *isLocal = calloc( count, sizeof(BOOL) );
-	NSURL **newURLs = calloc( count, sizeof(NSURL*) );
-	NSError **itemErrors = calloc( count, sizeof(NSError*) );
-	BOOL *succeeded = calloc( count, sizeof(BOOL) );
+// Thread-safe. Returns one dictionary per URL: its new URL if it has one, or the error.
+static NSArray *MoveFilesToTrash( NSArray *urls, NSArray *localFlags )
+{
+	NSUInteger count = [urls count];
+	NSMutableArray *results = [NSMutableArray arrayWithCapacity: count];
 	for ( NSUInteger i = 0; i < count; i++ )
-	{
-		NSURL *url = [[itemsToMove objectAtIndex: i] fileURL];
-		[urls addObject: url];
-		isLocal[i] = [url isLocalVolume];
-	}
+		[results addObject: [NSNull null]];
+	os_unfair_lock *resultsLock = malloc( sizeof(os_unfair_lock) );
+	*resultsLock = OS_UNFAIR_LOCK_INIT;
 
 	// Each move is a quick rename within the volume, so they can run side by side.
 	dispatch_apply( count, dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^( size_t i ) {
@@ -970,15 +902,43 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 			NSFileManager *fileManager = [NSFileManager defaultManager];
 			NSURL *newURL = nil;
 			NSError *error = nil;
-			// As in -moveItemToTrash:error:, items on network volumes get deleted (like the Finder does).
-			succeeded[i] = isLocal[i] ? [fileManager trashItemAtURL: [urls objectAtIndex: i] resultingItemURL: &newURL error: &error]
-									  : [fileManager removeItemAtURL: [urls objectAtIndex: i] error: &error];
-			newURLs[i] = [newURL retain];
-			itemErrors[i] = [error retain];
+			// Items on network volumes get deleted (like the Finder does).
+			BOOL succeeded = [[localFlags objectAtIndex: i] boolValue]
+				? [fileManager trashItemAtURL: [urls objectAtIndex: i] resultingItemURL: &newURL error: &error]
+				: [fileManager removeItemAtURL: [urls objectAtIndex: i] error: &error];
+
+			NSMutableDictionary *result = [NSMutableDictionary dictionaryWithObject: @(succeeded) forKey: @"succeeded"];
+			if ( newURL != nil )
+				[result setObject: newURL forKey: @"newURL"];
+			if ( error != nil )
+				[result setObject: error forKey: @"error"];
+
+			os_unfair_lock_lock( resultsLock );
+			[results replaceObjectAtIndex: i withObject: result];
+			os_unfair_lock_unlock( resultsLock );
 		}
 	});
+	free( resultsLock );
 
-	// Keep the data model in sync, with one change per parent and one notification in the end.
+	return results;
+}
+
+- (NSArray*) localFlagsForURLs: (NSArray*) urls
+{
+	NSMutableArray *flags = [NSMutableArray arrayWithCapacity: [urls count]];
+	for ( NSURL *url in urls )
+		[flags addObject: @([url isLocalVolume])];
+	return flags;
+}
+
+// Keeps the data model in sync, with one change per parent and one notification in the end.
+- (NSUInteger) applyTrashResults: (NSArray*) results forItems: (NSArray*) itemsToMove errors: (NSArray**) errors
+{
+	[self treeWillChange];
+
+	NSUInteger count = [itemsToMove count];
+	NSMutableArray *errorList = [NSMutableArray array];
+
 	[self setSelectedItems: @[] primary: nil];
 
 	NSMapTable *childrenByParent = [NSMapTable strongToStrongObjectsMapTable];
@@ -990,11 +950,12 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 	for ( NSUInteger i = 0; i < count; i++ )
 	{
 		FSItem *item = [itemsToMove objectAtIndex: i];
-		if ( !succeeded[i] )
+		NSDictionary *result = [results objectAtIndex: i];
+		if ( ![[result objectForKey: @"succeeded"] boolValue] )
 		{
 			[failedItems addObject: item];
-			if ( itemErrors[i] != nil )
-				[errorList addObject: itemErrors[i]];
+			if ( [result objectForKey: @"error"] != nil )
+				[errorList addObject: [result objectForKey: @"error"]];
 			continue;
 		}
 		movedCount++;
@@ -1014,11 +975,12 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 	for ( NSUInteger i = 0; i < count; i++ )
 	{
-		if ( !succeeded[i] || newURLs[i] == nil )
+		NSURL *newURL = [[results objectAtIndex: i] objectForKey: @"newURL"];
+		if ( newURL == nil )
 			continue;
 
 		// The trash folder is only part of the tree if the user scanned it.
-		NSString *trashPath = [[newURLs[i] URLByDeletingLastPathComponent] path];
+		NSString *trashPath = [[newURL URLByDeletingLastPathComponent] path];
 		id trashFolderItem = [trashFolderItems objectForKey: trashPath];
 		if ( trashFolderItem == nil )
 		{
@@ -1030,22 +992,12 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 		if ( trashFolderItem != [NSNull null] )
 		{
 			FSItem *item = [itemsToMove objectAtIndex: i];
-			[item setFileURL: newURLs[i]];
+			[item setFileURL: newURL];
 			[trashFolderItem insertChild: item updateParent: YES];
 			[self addItemToFileKindStatistic: item includingChilds: YES];
 		}
 	}
 	[self didChangeValueForKey: @"kindStatistics"];
-
-	for ( NSUInteger i = 0; i < count; i++ )
-	{
-		[newURLs[i] release];
-		[itemErrors[i] release];
-	}
-	free( isLocal );
-	free( newURLs );
-	free( itemErrors );
-	free( succeeded );
 
 	[[NSNotificationCenter defaultCenter] postNotificationName: FSItemsChangedNotification object: self];
 
@@ -1058,8 +1010,60 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 	return movedCount;
 }
 
+- (NSUInteger) moveItemsToTrash: (NSArray*) items errors: (NSArray**) errors
+{
+	NSArray *itemsToMove = [self itemsToMoveToTrashFrom: items];
+	if ( [itemsToMove count] == 0 )
+	{
+		if ( errors != NULL )
+			*errors = @[];
+		return 0;
+	}
+
+	NSArray *urls = [itemsToMove valueForKey: @"fileURL"];
+	NSArray *results = MoveFilesToTrash( urls, [self localFlagsForURLs: urls] );
+	return [self applyTrashResults: results forItems: itemsToMove errors: errors];
+}
+
+- (void) moveItemsToTrashInBackground: (NSArray*) items
+						   completion: (void (^)( NSUInteger movedCount, NSArray *errors )) completion
+{
+	NSArray *itemsToMove = [self itemsToMoveToTrashFrom: items];
+	if ( [itemsToMove count] == 0 || _movingItemsToTrash )
+	{
+		completion( 0, @[] );
+		return;
+	}
+
+	_movingItemsToTrash = YES;
+
+	NSArray *urls = [itemsToMove valueForKey: @"fileURL"];
+	NSArray *localFlags = [self localFlagsForURLs: urls];
+
+	dispatch_async( dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^{
+		@autoreleasepool
+		{
+			NSArray *results = [MoveFilesToTrash( urls, localFlags ) retain];
+			dispatch_async( dispatch_get_main_queue(), ^{
+				_movingItemsToTrash = NO;
+				NSArray *errors = nil;
+				NSUInteger movedCount = [self applyTrashResults: results forItems: itemsToMove errors: &errors];
+				[results release];
+				completion( movedCount, errors );
+			});
+		}
+	});
+}
+
+- (BOOL) isMovingItemsToTrash
+{
+	return _movingItemsToTrash;
+}
+
 - (void) refreshItem: (FSItem*) item
 {
+	[self treeWillChange];
+
 	//refresh zoomed item?
 	if ( item == nil )
 		item = [self zoomedItem];
@@ -1210,6 +1214,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) zoomIntoItem: (FSItem*) item
 {
+	[self treeWillChange];
+
     if ( [_zoomStack count] > 0 && item == [_zoomStack lastObject] )
         return;
 	
@@ -1229,6 +1235,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) zoomOutOneStep
 {
+	[self treeWillChange];
+
     if ( [_zoomStack count] > 0 )
     {
 		FSItem *oldZoomedItem = [[[self zoomedItem] retain] autorelease];
@@ -1249,6 +1257,8 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 
 - (void) zoomOutToItem: (FSItem*) item
 {
+	[self treeWillChange];
+
     NSAssert( [_zoomStack count] > 0, @"can't zoom out if zoom stack is empty" );
     
     NSParameterAssert( item == nil

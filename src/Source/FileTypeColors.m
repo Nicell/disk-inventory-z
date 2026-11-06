@@ -17,6 +17,13 @@
 #import "FileTypeColors.h"
 #import <TreeMapView/TMVCushionRenderer.h>
 
+#include <os/lock.h>
+static os_unfair_lock g_colorsLock = OS_UNFAIR_LOCK_INIT;
+
+@interface FileTypeColors(Locked)
+- (NSColor *) lockedColorForKind: (NSString*) kind;
+@end
+
 @implementation FileTypeColors
 
 + (FileTypeColors*) instance
@@ -89,7 +96,9 @@
 
 - (void) reset
 {
+	os_unfair_lock_lock( &g_colorsLock );
 	[_colors removeAllObjects];
+	os_unfair_lock_unlock( &g_colorsLock );
 }
 
 - (void) dealloc
@@ -102,10 +111,23 @@
 
 - (NSColor *) colorForItem: (FSItem*) item
 {
-    return [self colorForKind: [item kindName]];
+    // The tree map can ask for this on another thread. The lazy lookup of a missing
+    // kind writes to the item, so that has to wait for the main thread.
+    NSString *kind = [item kindNameIfKnown];
+    if ( kind == nil && [NSThread isMainThread] )
+        kind = [item kindName];
+    return [self colorForKind: kind != nil ? kind : @""];
 }
 
 - (NSColor *) colorForKind: (NSString*) kind
+{
+    os_unfair_lock_lock( &g_colorsLock );
+    NSColor *color = [[self lockedColorForKind: kind] retain];
+    os_unfair_lock_unlock( &g_colorsLock );
+    return [color autorelease];
+}
+
+- (NSColor *) lockedColorForKind: (NSString*) kind
 {
     NSColor *color = [_colors objectForKey: kind];
 

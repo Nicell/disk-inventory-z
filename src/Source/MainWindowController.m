@@ -623,6 +623,9 @@
 			[sizeFmt stringForObjectValue: @(selectedSize)]];
 	}
 
+	if ( [doc isMovingItemsToTrash] )
+		status = [status stringByAppendingString: NSLocalizedString(@"   ·   Moving to Trash…", @"")];
+
 	[_statusBar setStringValue: status];
 }
 
@@ -750,6 +753,9 @@
 
 - (IBAction) refresh:(id)sender
 {
+	if ( [(FileSystemDoc*) [self document] isMovingItemsToTrash] )
+		return;
+
 	FileSystemDoc *doc = [self document];
     FSItem *selectedItem = [doc selectedItem];
 	
@@ -773,6 +779,9 @@
 - (IBAction) moveToTrash:(id)sender
 {
 	FileSystemDoc *doc = [self document];
+	if ( [doc isMovingItemsToTrash] )
+		return;
+
     FSItem *selectedItem = [doc selectedItem];
 	
 	if ( [[doc selectedItems] count] > 1 )
@@ -951,6 +960,13 @@
     FileSystemDoc *doc = [self document];
     FSItem *selectedItem = [doc selectedItem];
 	SEL menuAction = [item action];
+
+	//a move to the trash has to finish before the tree can change again
+	if ( [(FileSystemDoc*) [self document] isMovingItemsToTrash]
+		 && ( menuAction == @selector(moveToTrash:) || menuAction == @selector(refresh:) ) )
+	{
+		return NO;
+	}
 	// Body below uses -setTitle: / -setState: on `menuItem`. Preserve the
 	// pre-existing pattern: cast `item` to NSMenuItem* and let the
 	// macro's isKindOfClass: check decide whether to actually fire
@@ -1293,28 +1309,31 @@
 		}
 	}
 
-	NSArray *errors = nil;
-	NSUInteger movedCount = [doc moveItemsToTrash: items errors: &errors];
+	[doc moveItemsToTrashInBackground: items completion: ^( NSUInteger movedCount, NSArray *errors ) {
+		if ( movedCount != 0 )
+		{
+			if ( view != nil )
+				[[self class] poofEffectInView: view inRect: cellRect];
 
-	if ( movedCount != 0 )
-	{
-		if ( view != nil )
-			[[self class] poofEffectInView: view inRect: cellRect];
+			[self synchronizeWindowTitleWithDocumentName];
+		}
 
-		[self synchronizeWindowTitleWithDocumentName];
-	}
+		if ( [errors count] != 0 )
+		{
+			NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+			alert.alertStyle = NSAlertStyleInformational;
+			alert.messageText = [NSString stringWithFormat: NSLocalizedString(@"%lu items cannot be moved to the trash by Disk Inventory Z.",@""),
+															(unsigned long) [errors count]];
+			NSString *reason = [[errors firstObject] localizedFailureReason];
+			if ( reason != nil )
+				alert.informativeText = reason;
+			[alert beginSheetModalForWindow: [self window] completionHandler: nil];
+		}
 
-	if ( [errors count] != 0 )
-	{
-		NSAlert *alert = [[[NSAlert alloc] init] autorelease];
-		alert.alertStyle = NSAlertStyleInformational;
-		alert.messageText = [NSString stringWithFormat: NSLocalizedString(@"%lu items cannot be moved to the trash by Disk Inventory Z.",@""),
-														(unsigned long) [errors count]];
-		NSString *reason = [[errors firstObject] localizedFailureReason];
-		if ( reason != nil )
-			alert.informativeText = reason;
-		[alert beginSheetModalForWindow: [self window] completionHandler: nil];
-	}
+		[self updateStatusBar];
+	}];
+
+	[self updateStatusBar];
 }
 
 - (void) performMoveToTrashForItem: (FSItem*) selectedItem
@@ -1340,26 +1359,34 @@
 	}
 	
 	//now we can do it
-    NSError *error = nil;
-    if ( [doc moveItemToTrash: selectedItem error:&error] )
-	{
-		[[self class] poofEffectInView: view inRect: cellRect];
-		
-        [self synchronizeWindowTitleWithDocumentName];
-	}
-	else
-	{
-		//failed
-        NSString *msg = [NSString stringWithFormat: NSLocalizedString(@"\"%@\" cannot be moved to the trash by Disk Inventory Z.",@""), [selectedItem displayName] ];
-        NSString *subMsg = error.localizedFailureReason; //NSLocalizedString( @"Maybe you do not have sufficient access privileges.", @"" );
+	FSItem *parent = [selectedItem parent];
+	[doc moveItemsToTrashInBackground: @[ selectedItem ] completion: ^( NSUInteger movedCount, NSArray *errors ) {
+		if ( movedCount != 0 )
+		{
+			//try to set "parent" as new selection
+			if ( parent != [doc zoomedItem] )
+				[doc setSelectedItem: parent];
 
-        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
-        alert.alertStyle = NSAlertStyleInformational;
-        alert.messageText = msg;
-        if ( subMsg != nil )
-            alert.informativeText = subMsg;
-        [alert beginSheetModalForWindow: [self window] completionHandler: nil];
- 	}
+			[[self class] poofEffectInView: view inRect: cellRect];
+
+			[self synchronizeWindowTitleWithDocumentName];
+		}
+		else if ( [errors count] != 0 )
+		{
+			//failed
+			NSString *msg = [NSString stringWithFormat: NSLocalizedString(@"\"%@\" cannot be moved to the trash by Disk Inventory Z.",@""), [selectedItem displayName] ];
+			NSString *subMsg = [[errors firstObject] localizedFailureReason]; //NSLocalizedString( @"Maybe you do not have sufficient access privileges.", @"" );
+
+			NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+			alert.alertStyle = NSAlertStyleInformational;
+			alert.messageText = msg;
+			if ( subMsg != nil )
+				alert.informativeText = subMsg;
+			[alert beginSheetModalForWindow: [self window] completionHandler: nil];
+		}
+
+		[self updateStatusBar];
+	}];
 }
 
 @end

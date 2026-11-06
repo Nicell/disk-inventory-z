@@ -12,6 +12,7 @@
 	
 	FSItem *_otherSpaceItem;
 	FSItem *_freeSpaceItem;
+    NSColor *_freeSpaceColor, *_otherSpaceColor;
 }
 
 - (FileSystemDoc*) document;
