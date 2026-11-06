@@ -10,16 +10,23 @@ It's a modern, updated fork of the classic
 [Disk Inventory X](https://gitlab.com/tderlien/disk-inventory-x) by
 Tjark Derlien, but rebuilt to fully support macOS 26 Tahoe.
 
+This repository is a modified fork of
+[danifunker/disk-inventory-z](https://github.com/danifunker/disk-inventory-z)
+by Dani Sarfati, focused on speed: a parallel `getattrlistbulk` scanner, much
+lower memory use, and a treemap that only creates what it lays out.
+
 This app is similar to [WinDirStat](https://windirstat.net/), [kDirStat](https://kdirstat.sourceforge.net/)/ [qdirstat](https://github.com/shundhammer/qdirstat) but for macOS.
 
 ## Download
 
-Grab the latest signed, notarized build from the
-[**Releases**](https://github.com/danifunker/disk-inventory-z/releases) page.
+Grab the latest build from the
+[**Releases**](https://github.com/Nicell/disk-inventory-z/releases) page.
 
 1. Download the `.dmg` from the newest release.
 2. Open it and drag **Disk Inventory Z** to your Applications folder.
-3. Launch it. The first time you scan certain locations, macOS may ask you
+3. If macOS says it can't verify the app, the build isn't notarized. Allow it
+   under **System Settings → Privacy & Security → Open Anyway**.
+4. Launch it. The first time you scan certain locations, macOS may ask you
    to grant **Full Disk Access** — the app will point you to the right pane
    in System Settings.
 
@@ -79,4 +86,5 @@ AI was used to help update this fork. That said, a lot of testing has been done 
 
 GPL v3 — same as the upstream project. See [COPYING](COPYING).
 
-Original copyright © Tjark Derlien. Fork maintained by Dani Sarfati.
+Original copyright © Tjark Derlien. Disk Inventory Z fork by Dani Sarfati.
+Scanner and performance changes by Nicell (2026).

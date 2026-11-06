@@ -18,6 +18,10 @@
     id _view;       // the tree map view to which this item belongs
     
     NSRect _rect;   // tree map item's rectangle (in backing coordinates of the tree map view)
+    // Asked for over and over during layout and drawing. Valid until the next -refreshWithItem:.
+    BOOL _hasCachedIsLeaf, _cachedIsLeaf;
+    BOOL _hasCachedWeight;
+    unsigned long long _cachedWeight;
     NSMutableArray *_childRenderers;
     TMVCushionRenderer *_cushionRenderer;
 }

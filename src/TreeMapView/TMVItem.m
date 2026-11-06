@@ -72,7 +72,9 @@ static NSMutableDictionary *_cushionTextAttributes;
 
     _cushionRenderer = [[TMVCushionRenderer alloc] init];
 
-    if ( ![self isLeaf] )
+    // Renderers below the root are created when they get laid out, see -layoutChilds.
+    // Most items of a big tree are too small to ever get there.
+    if ( _item == nil && ![self isLeaf] )
         [self createChildRenderers];
 
     return self;
@@ -90,16 +92,16 @@ static NSMutableDictionary *_cushionTextAttributes;
 {
     _item = item;
 	_rect = NSZeroRect;
+	_hasCachedIsLeaf = NO;
+	_hasCachedWeight = NO;
 	
 	[_cushionRenderer setRect: NSZeroRect];
 	
-    if ( ![self isLeaf] )
+	[_childRenderers release];
+	_childRenderers = nil;
+
+    if ( _item == nil && ![self isLeaf] )
 		[self createChildRenderers];
-	else
-	{
-		[_childRenderers release];
-		_childRenderers = nil;
-	}
 }
 
 - (void) setCushionColor: (NSColor*) color
@@ -195,7 +197,12 @@ static NSMutableDictionary *_cushionTextAttributes;
 
 - (BOOL) isLeaf
 {
-    return ![_dataSource treeMapView: _view isNode: _item];
+    if ( !_hasCachedIsLeaf )
+    {
+        _cachedIsLeaf = ![_dataSource treeMapView: _view isNode: _item];
+        _hasCachedIsLeaf = YES;
+    }
+    return _cachedIsLeaf;
 }
 
 - (id) item
@@ -205,7 +212,12 @@ static NSMutableDictionary *_cushionTextAttributes;
 
 - (unsigned long long) weight
 {
-    return [_dataSource treeMapView: _view weightByItem: _item];
+    if ( !_hasCachedWeight )
+    {
+        _cachedWeight = [_dataSource treeMapView: _view weightByItem: _item];
+        _hasCachedWeight = YES;
+    }
+    return _cachedWeight;
 }
 
 - (NSRect) rect
@@ -215,7 +227,6 @@ static NSMutableDictionary *_cushionTextAttributes;
 
 - (NSEnumerator *) childEnumerator
 {
-    NSAssert( _childRenderers != nil, @"method 'childEnumerator' can only be invoked for nodes, not for leafs");
 
     return [_childRenderers objectEnumerator];
 }
@@ -312,6 +323,9 @@ static NSMutableDictionary *_cushionTextAttributes;
 {
 //	NSAutoreleasePool *localAutorelasePool = [[NSAutoreleasePool alloc] init];
 	
+    if ( _childRenderers == nil )
+        [self createChildRenderers];
+
     NSMutableArray *rows = [[NSMutableArray alloc] init];   //doubles, fraction of total height for each row
     NSMutableArray *childsPerRow = [[NSMutableArray alloc] init]; //ints, number of childs per row
     NSMutableArray *childWidths = [[NSMutableArray alloc] initWithCapacity: [_childRenderers count]]; //doubles, fraction of total width for each child

@@ -1,6 +1,19 @@
 release notes
 =============
 
+2.1.0 (2026-11-06)
+------------------
+new:
+- much faster scanning: a parallel scanner built on getattrlistbulk
+- much lower memory use: items create their NSURL only when needed
+- the tree map only creates renderers for what it lays out, which speeds up deletes and zooming
+- no more freeze when a scan finishes: statistics are collected in the background
+
+bug fix:
+- hardlinks in packages and at the top level were counted more than once; totals now match du
+- the logical size setting was ignored in places
+- scans in two documents at the same time could interfere with each other
+
 1.2 (2019-02-28)
 ----------------
 new:

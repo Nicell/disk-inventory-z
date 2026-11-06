@@ -18,6 +18,7 @@
 #import "FSItem.h"
 #import "NSURL-Extensions.h"
 #import "NTFilePasteboardSource.h"
+#import "DIXBulkScanner.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 //for debugging and logging purposes
@@ -37,12 +38,34 @@ _Atomic unsigned g_folderCount;
 // FileSystemDoc has its own serial _scanQueue, but they run in parallel),
 // so all access goes through g_seenHardlinkInodesLock.
 #include <os/lock.h>
+#include <sys/sysctl.h>
+#include <sys/stat.h>
 static NSMutableSet *g_seenHardlinkInodes = nil;
 static os_unfair_lock g_seenHardlinkInodesLock = OS_UNFAIR_LOCK_INIT;
 static unsigned g_packageCheckCount = 0;
 
-//global cache for kind names
+//global cache for kind names; scans of several documents run at the same time
 NSMutableDictionary *g_kindNameDictionary = nil;
+static os_unfair_lock g_kindNameLock = OS_UNFAIR_LOCK_INIT;
+
+static NSString *CachedKindNameForUTI( NSString *uti )
+{
+	if ( uti == nil )
+		return nil;
+	os_unfair_lock_lock( &g_kindNameLock );
+	NSString *kindName = [[g_kindNameDictionary objectForKey: uti] retain];
+	os_unfair_lock_unlock( &g_kindNameLock );
+	return [kindName autorelease];
+}
+
+static void CacheKindNameForUTI( NSString *uti, NSString *kindName )
+{
+	if ( uti == nil || kindName == nil )
+		return;
+	os_unfair_lock_lock( &g_kindNameLock );
+	[g_kindNameDictionary setObject: kindName forKey: uti];
+	os_unfair_lock_unlock( &g_kindNameLock );
+}
 
 //exceptions
 NSString* FSItemLoadingCanceledException = @"FSItemLoadingCanceledException";
@@ -78,6 +101,13 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 
 - (void) childChanged: (FSItem*) child oldSize: (unsigned long long) oldSize newSize: (unsigned long long) newSize;
 
+- (BOOL) loadUsingBulkScannerAsOpaquePackage: (BOOL) asOpaquePackage usePhysicalSize: (BOOL) usePhysicalSize;
+- (id) initWithScanNode: (DIXScanNode*) node
+				 parent: (FSItem*) parent
+				  kinds: (NSMapTable*) kinds
+		usePhysicalSize: (BOOL) usePhysicalSize;
+- (void) adoptChildrenOfScanNode: (DIXScanNode*) node kinds: (NSMapTable*) kinds usePhysicalSize: (BOOL) usePhysicalSize;
+
 @end
 
 //================ implementation FSItem ======================================================
@@ -87,7 +117,8 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 + (void) initialize
 {
 	//instantiate the dictionaries for global kind names cache
-	g_kindNameDictionary = [[NSMutableDictionary alloc] init];
+	if ( g_kindNameDictionary == nil )
+		g_kindNameDictionary = [[NSMutableDictionary alloc] init];
 }
 
 + (void) resetHardlinkDedup
@@ -178,6 +209,8 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
     [_fileURL release];
 	[_size release];
 	[_icons release];
+	[_scanName release];
+	[_kindName release];
     
     //_parent and _delegate no release!
 	
@@ -196,10 +229,15 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 
 - (NSURL *) fileURL
 {
-	if ( ![self isSpecialItem] )
-		return _fileURL;
-	else
+	if ( [self isSpecialItem] )
 		return [[self root] fileURL];
+
+	if ( _fileURL == nil && _hasScanInfo )
+	{
+		// Only the few items a user actually touches ever get here.
+		_fileURL = [[[_parent fileURL] URLByAppendingPathComponent: _scanName isDirectory: _scanIsFolder] retain];
+	}
+	return _fileURL;
 }
 
 - (void) setFileURL: (NSURL*) url
@@ -209,6 +247,14 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 	[url retain];
 	[_fileURL release];
 	_fileURL = url;
+
+	// moved to the trash, where the name may have changed
+	if ( _hasScanInfo )
+	{
+		NSString *name = [[url lastPathComponent] copy];
+		[_scanName release];
+		_scanName = name;
+	}
 }
 
 /*- (unsigned) hash
@@ -270,7 +316,7 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 {
 	if ( ![self isSpecialItem] )
 	{
-		return [[self fileURL] cachedIsDirectory];
+		return _hasScanInfo ? _scanIsFolder : [[self fileURL] cachedIsDirectory];
 	}
 	else
 		return NO;
@@ -279,7 +325,7 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 - (BOOL) isPackage
 {
 	if ( ![self isSpecialItem] )
-		return [[self fileURL] cachedIsPackage];
+		return _hasScanInfo ? _scanIsPackage : [[self fileURL] cachedIsPackage];
 	else
 		return NO;
 }
@@ -288,7 +334,7 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 {
 	if ( ![self isSpecialItem] )
 	{
-		return [[self fileURL] cachedIsAliasOrSymbolicLink];
+		return _hasScanInfo ? _scanIsAlias : [[self fileURL] cachedIsAliasOrSymbolicLink];
 	}
 	else
 		return NO;
@@ -419,11 +465,71 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 	if ( [delegate respondsToSelector: @selector(fsItemShouldUsePhysicalFileSize:)] )
 		usePhysicalSize = [delegate fsItemShouldUsePhysicalFileSize: self];
 	
+	if ( [self loadUsingBulkScannerAsOpaquePackage: NO usePhysicalSize: usePhysicalSize] )
+		return;
+
 	//use new optimized version of loadChilds
 	[self loadChildrenAndSetKindStrings: YES
 						usePhysicalSize: usePhysicalSize];
 	
 	LOG (@"package check count: %d", g_packageCheckCount);
+}
+
+- (void) loadPackageSize
+{
+	BOOL usePhysicalSize = NO;
+
+	id delegate = [self delegate];
+	if ( [delegate respondsToSelector: @selector(fsItemShouldUsePhysicalFileSize:)] )
+		usePhysicalSize = [delegate fsItemShouldUsePhysicalFileSize: self];
+
+	if ( [self loadUsingBulkScannerAsOpaquePackage: YES usePhysicalSize: usePhysicalSize] )
+		return;
+
+	unsigned long long packageSize = 0;
+	NSDirectoryEnumerator *packageEnum =
+		[[NSFileManager defaultManager] enumeratorAtURL: [self fileURL]
+							 includingPropertiesForKeys: @[ NSURLTotalFileAllocatedSizeKey, NSURLTotalFileSizeKey ]
+												options: 0
+										   errorHandler: nil];
+	NSURLResourceKey key = usePhysicalSize ? NSURLTotalFileAllocatedSizeKey : NSURLTotalFileSizeKey;
+	for ( NSURL *url in packageEnum ) @autoreleasepool
+	{
+		if ( [delegate respondsToSelector: @selector(fsItemShouldContinueLoading)]
+			 && ![delegate fsItemShouldContinueLoading] )
+		{
+			[NSException raise: FSItemLoadingCanceledException format: @""];
+		}
+		NSNumber *size = nil;
+		[url getResourceValue: &size forKey: key error: nil];
+		packageSize += [size unsignedLongLongValue];
+	}
+	[self setSizeValue: packageSize];
+}
+
+- (void) loadFileSize: (BOOL) usePhysicalSize
+{
+	id delegate = [self delegate];
+	DIXInodeSet *inodes = [delegate respondsToSelector: @selector(fsItemHardlinkSet)]
+							? (DIXInodeSet*) [delegate fsItemHardlinkSet] : NULL;
+
+	struct stat info;
+	if ( inodes != NULL && lstat( [[self fileURL] fileSystemRepresentation], &info ) == 0
+		 && S_ISREG( info.st_mode ) && info.st_nlink > 1 )
+	{
+		_hardlinkDuplicate = !DIXInodeSetAdd( inodes, info.st_ino );
+	}
+
+	[self recalculateSize: usePhysicalSize updateParent: NO];
+}
+
+- (void) recalculateSizeFromDirectChildren
+{
+	UInt64 size = 0;
+	for ( FSItem *child in _childs )
+		size += [child sizeValue];
+	[_childs sortUsingSelector: @selector(compareSizeDescendingly:)];
+	[self setSizeValue: size];
 }
 
 #pragma mark -----------------sizes-----------------------
@@ -626,24 +732,24 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
  */
     NSString *uti = [[self fileURL] cachedUTI];
     
-    if ( g_kindNameDictionary == nil )
-        g_kindNameDictionary = [[NSMutableDictionary alloc] init];
-
-    _kindName = [[g_kindNameDictionary objectForKey: uti] retain];
+    [_kindName release];
+    _kindName = [CachedKindNameForUTI( uti ) retain];
 
     if ( _kindName == nil )
     {
         _kindName = [[UTType typeWithIdentifier: uti].localizedDescription retain];
         
         //remember kind name for similar files
-        if ( _kindName != nil )
-            [g_kindNameDictionary setObject: _kindName forKey: uti];
+        CacheKindNameForUTI( uti, _kindName );
      }
 
     if ( _kindName == nil )
     {
         _kindName = [[self fileURL] getCachedStringValue: NSURLLocalizedTypeDescriptionKey];
         [_kindName retain];
+
+        //unregistered types have no description of their own, but all of them say the same
+        CacheKindNameForUTI( uti, _kindName );
     }
     
     //let our childs do the same
@@ -660,7 +766,7 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 	switch ( [self type] )
 	{
 		case FileFolderItem:
-			return [[self fileURL] cachedName];
+			return _hasScanInfo ? _scanName : [[self fileURL] cachedName];
 		case FreeSpaceItem:
 			return @"FreeSpaceItem";
 		case OtherSpaceItem:
@@ -920,9 +1026,9 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 	if ( !isFolder )
 	{
 		 if ( usePhysicalSize )
-			[self setSizeValue: [url physicalSize]];
+			[self setSizeValue: [[url physicalSize] unsignedLongLongValue]];
 		 else
-			[self setSizeValue: [url logicalSize]];
+			[self setSizeValue: [[url logicalSize] unsignedLongLongValue]];
 	}
     else
         _childs = [[NSMutableArray<FSItem*> alloc] init];
@@ -1253,7 +1359,7 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
     
     [itemStack release];
 
-	[self recalculateSize:YES updateParent:NO];
+	[self recalculateSize: usePhysicalSize updateParent:NO];
 
 	// Drop the per-URL resource caches now that every FSItem has size + kind
 	// stamped onto itself. On a 1M-file scan this releases a few hundred MB
@@ -1261,6 +1367,185 @@ NSString* FSItemLoadingFailedException = @"FSItemLoadingFailedException";
 	// document closes.
 	if ( [self isRoot] )
 		[self purgeResourceCachesRecursive];
+}
+
+#pragma mark -----------------bulk scanner-----------------------
+
+static int BulkScannerThreadCount( NSURL *url )
+{
+	NSInteger configured = [[NSUserDefaults standardUserDefaults] integerForKey: @"DIXScanThreads"];
+	if ( configured > 0 )
+		return (int) MIN( configured, 64 );
+
+	// Network file systems answer better to a couple of connections at a time.
+	// Locally, kernel time per entry keeps growing with the thread count, and
+	// measurements of a 1.5M item tree show little gain past the performance cores.
+	if ( ![url isLocalVolume] )
+		return 2;
+
+	int performanceCores = 0;
+	size_t length = sizeof(performanceCores);
+	if ( sysctlbyname( "hw.perflevel0.physicalcpu", &performanceCores, &length, NULL, 0 ) != 0 || performanceCores <= 0 )
+		performanceCores = (int) [[NSProcessInfo processInfo] activeProcessorCount];
+	return MAX( 2, MIN( performanceCores, 8 ) );
+}
+
+// Returns NO if the old walker has to do the job (turned off by the user, or a
+// volume that cannot do bulk reads). Raises FSItemLoadingCanceledException on cancel.
+- (BOOL) loadUsingBulkScannerAsOpaquePackage: (BOOL) asOpaquePackage usePhysicalSize: (BOOL) usePhysicalSize
+{
+	if ( [[NSUserDefaults standardUserDefaults] boolForKey: @"DIXLegacyScanner"] )
+		return NO;
+
+	NSURL *url = [self fileURL];
+	id delegate = [self delegate];
+
+	if ( ![self isFolder] )
+		return YES;
+
+	BOOL lookIntoPackages = [delegate respondsToSelector: @selector(fsItemShouldLookIntoPackages:)]
+							&& [delegate fsItemShouldLookIntoPackages: self];
+
+	DIXScanOptions options = { 0 };
+	options.rootPath = [url fileSystemRepresentation];
+	options.threads = BulkScannerThreadCount( url );
+	options.rootIsOpaquePackage = asOpaquePackage;
+	options.lookIntoPackages = lookIntoPackages;
+	options.fileCounter = &g_fileCount;
+	options.folderCounter = &g_folderCount;
+	if ( [delegate respondsToSelector: @selector(fsItemHardlinkSet)] )
+		options.inodes = (DIXInodeSet*) [delegate fsItemHardlinkSet];
+
+	DIXScan *scan = DIXScanStart( &options );
+
+	BOOL canceled = NO;
+	BOOL reportsPath = [delegate respondsToSelector: @selector(fsItemScanningPath:)];
+	BOOL polls = [delegate respondsToSelector: @selector(fsItemShouldContinueLoading)];
+	while ( !DIXScanWait( scan, 50 ) )
+	{
+		if ( canceled )
+			continue;
+
+		@autoreleasepool
+		{
+			char path[1024];
+			if ( reportsPath && DIXScanCopyCurrentPath( scan, path, sizeof(path) ) )
+				[delegate fsItemScanningPath: [NSString stringWithUTF8String: path]];
+
+			if ( polls && ![delegate fsItemShouldContinueLoading] )
+			{
+				canceled = YES;
+				DIXScanCancel( scan );
+			}
+		}
+	}
+
+	if ( canceled || ( polls && ![delegate fsItemShouldContinueLoading] ) )
+	{
+		DIXScanFree( scan );
+		[NSException raise: FSItemLoadingCanceledException format: @""];
+	}
+
+	if ( DIXScanIsUnsupported( scan ) )
+	{
+		DIXScanFree( scan );
+		return NO;
+	}
+
+	DIXScanNode *root = DIXScanFinish( scan );
+
+	if ( asOpaquePackage )
+	{
+		[self setSizeValue: atomic_load( usePhysicalSize ? &root->physicalSize : &root->logicalSize )];
+	}
+	else
+	{
+		@autoreleasepool
+		{
+			[_childs release];
+			_childs = nil;
+
+			NSMapTable *kinds = [NSMapTable mapTableWithKeyOptions: NSPointerFunctionsOpaqueMemory | NSPointerFunctionsOpaquePersonality
+													  valueOptions: NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPersonality];
+			[self adoptChildrenOfScanNode: root kinds: kinds usePhysicalSize: usePhysicalSize];
+			[self setSizeValue: atomic_load( usePhysicalSize ? &root->physicalSize : &root->logicalSize )];
+
+			// The scanner sorted by physical size.
+			if ( !usePhysicalSize )
+				[self recalculateSize: NO updateParent: NO];
+		}
+	}
+
+	DIXScanFree( scan );
+	return YES;
+}
+
+- (void) adoptChildrenOfScanNode: (DIXScanNode*) node kinds: (NSMapTable*) kinds usePhysicalSize: (BOOL) usePhysicalSize
+{
+	if ( _childs == nil )
+		_childs = [[NSMutableArray alloc] initWithCapacity: node->childCount];
+
+	for ( DIXScanNode *childNode = node->first; childNode != NULL; childNode = childNode->next )
+	{
+		FSItem *child = [[FSItem alloc] initWithScanNode: childNode
+												  parent: self
+												   kinds: kinds
+										 usePhysicalSize: usePhysicalSize];
+		[_childs addObject: child];
+		[child release];
+
+		if ( childNode->first != NULL )
+			[child adoptChildrenOfScanNode: childNode kinds: kinds usePhysicalSize: usePhysicalSize];
+	}
+}
+
+- (id) initWithScanNode: (DIXScanNode*) node
+				 parent: (FSItem*) parent
+				  kinds: (NSMapTable*) kinds
+		usePhysicalSize: (BOOL) usePhysicalSize
+{
+	self = [super init];
+
+	_type = FileFolderItem;
+	_parent = parent; //no retain
+	_hasScanInfo = YES;
+	_scanIsFolder = node->kind != DIXNodeFile;
+	_scanIsPackage = node->kind == DIXNodePackage;
+	_scanIsAlias = node->isAlias;
+	_hardlinkDuplicate = node->isHardlinkDuplicate;
+	_scanLogicalSize = atomic_load_explicit( &node->logicalSize, memory_order_relaxed );
+	_scanPhysicalSize = atomic_load_explicit( &node->physicalSize, memory_order_relaxed );
+	_sizeValue = usePhysicalSize ? _scanPhysicalSize : _scanLogicalSize;
+
+	_scanName = [[NSString alloc] initWithUTF8String: node->name];
+	if ( _scanName == nil ) // not valid UTF-8
+		_scanName = [[[NSFileManager defaultManager] stringWithFileSystemRepresentation: node->name
+																				 length: strlen( node->name )] copy];
+	if ( _scanName == nil )
+		_scanName = [[NSString alloc] initWithCString: node->name encoding: NSMacOSRomanStringEncoding];
+
+	if ( _scanIsFolder )
+		_childs = [[NSMutableArray alloc] initWithCapacity: node->childCount];
+
+	// One kind name per file type, no matter how many files have that type.
+	NSString *kindName = (NSString*) NSMapGet( kinds, node->uti );
+	if ( kindName == nil )
+	{
+		NSString *uti = [NSString stringWithUTF8String: node->uti];
+		kindName = CachedKindNameForUTI( uti );
+		if ( kindName == nil )
+		{
+			kindName = [UTType typeWithIdentifier: uti].localizedDescription;
+			if ( kindName == nil )
+				kindName = [[self fileURL] getCachedStringValue: NSURLLocalizedTypeDescriptionKey];
+			CacheKindNameForUTI( uti, kindName );
+		}
+		if ( kindName != nil )
+			NSMapInsert( kinds, node->uti, kindName );
+	}
+	_kindName = [kindName retain];
+
+	return self;
 }
 
 //compare the size of 2 FSItems

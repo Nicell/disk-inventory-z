@@ -122,7 +122,7 @@ body:
     attributes:
       label: Before submitting
       options:
-        - label: I searched [existing issues](https://github.com/danifunker/disk-inventory-z/issues) and didn't find a duplicate.
+        - label: I searched [existing issues](https://github.com/Nicell/disk-inventory-z/issues) and didn't find a duplicate.
           required: true
-        - label: I'm using the latest version from the [Releases](https://github.com/danifunker/disk-inventory-z/releases) page.
+        - label: I'm using the latest version from the [Releases](https://github.com/Nicell/disk-inventory-z/releases) page.
           required: true

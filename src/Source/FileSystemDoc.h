@@ -85,6 +85,7 @@
 	// read inside the dispatch_sync block (where worker is paused, so no
 	// race). _workerLastRefreshTime is touched only on the worker thread.
 	NSString *_workerCurrentPath;
+	void *_scanHardlinkSet; // DIXInodeSet*, shared by the top-level walks of one scan
 	uint64_t _workerLastRefreshTime;
 
 }

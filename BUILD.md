@@ -8,7 +8,7 @@
 ## Build from source
 
 ```sh
-git clone https://github.com/danifunker/disk-inventory-z.git
+git clone https://github.com/Nicell/disk-inventory-z.git
 cd disk-inventory-z
 xcodebuild -project "Disk Inventory Z.xcodeproj" \
            -scheme "Disk Inventory Z" \
@@ -40,9 +40,19 @@ holds only docs, the project file, and CI config.
 ## Releases
 
 Tagged builds (`v*`) run [`.github/workflows/release.yml`](.github/workflows/release.yml)
-on macOS. The workflow signs the app with the project's Developer ID,
-notarizes it through Apple's notary service, and attaches a stapled `.dmg`
-to the GitHub release.
+on macOS. The workflow attaches a `.dmg` to the GitHub release. A tag with a hyphen, like
+`v2.1.0-beta.1`, becomes a pre-release.
+
+How the app gets signed depends on the repository's Actions secrets:
+
+| Secrets | Result |
+| ------- | ------ |
+| None | Ad-hoc signed. Runs, but macOS blocks the first launch of a downloaded copy until it's allowed in System Settings. |
+| `BUILD_CERT_P12_BASE64`, `BUILD_CERT_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_TEAM_ID` | Signed with your Developer ID certificate. |
+| The above plus `APPLE_ID`, `APPLE_APP_PASSWORD` | Also notarized and stapled, so it opens with no warnings. |
+
+A Developer ID certificate requires a paid Apple Developer Program membership.
+An Apple Development certificate can't sign apps for distribution.
 
 To cut a release, push a tag:
 

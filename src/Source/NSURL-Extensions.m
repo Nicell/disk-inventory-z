@@ -127,7 +127,7 @@ void LoadFirmlinks()
     
     // fallback to NSURLFileSizeKey
     if ( fileSizeBytes == nil )
-        [self getNumberValue: NSURLFileSizeKey];
+        fileSizeBytes = [self getNumberValue: NSURLFileSizeKey];
  
     return fileSizeBytes;
 }
@@ -139,7 +139,7 @@ void LoadFirmlinks()
     
     // fallback to NSURLTotalFileSizeKey
     if ( fileSizeBytes == nil )
-        [self getNumberValue: NSURLTotalFileSizeKey];
+        fileSizeBytes = [self getNumberValue: NSURLTotalFileSizeKey];
     
     return fileSizeBytes;
 }
@@ -307,7 +307,7 @@ void LoadFirmlinks()
     
     // fallback to NSURLFileSizeKey
     if ( fileSizeBytes == nil )
-        [self getCachedNumberValue: NSURLFileSizeKey];
+        fileSizeBytes = [self getCachedNumberValue: NSURLFileSizeKey];
     
     return fileSizeBytes;
 }
@@ -319,7 +319,7 @@ void LoadFirmlinks()
     
     // fallback to NSURLTotalFileSizeKey
     if ( fileSizeBytes == nil )
-        [self getCachedNumberValue: NSURLTotalFileSizeKey];
+        fileSizeBytes = [self getCachedNumberValue: NSURLTotalFileSizeKey];
     
     return fileSizeBytes;
 }
@@ -384,7 +384,7 @@ void LoadFirmlinks()
 // user actually inspects.
 - (void) purgeResourceValueCache
 {
-    static NSString* cacheKey = @"io.github.danifunker.disk-inventory-z.URLResourceValueCacheKey";
+    static NSString* cacheKey = @"io.github.nicell.disk-inventory-z.URLResourceValueCacheKey";
     id cache = nil;
     if ( ![self getResourceValue: &cache forKey: cacheKey error: nil] )
         return;
@@ -399,7 +399,7 @@ void LoadFirmlinks()
     // we keep the cached values in a seperate NSMutableDictionary object, as keeping them individually as "temporary resource values" (see NSURL docs) takes about 50% more memory.
     // The NSMutableDictionary is then kept as the single URL's temporary resource value.
     
-    static NSString* cacheKey = @"io.github.danifunker.disk-inventory-z.URLResourceValueCacheKey";
+    static NSString* cacheKey = @"io.github.nicell.disk-inventory-z.URLResourceValueCacheKey";
     
     NSMutableDictionary* cache = nil;
     

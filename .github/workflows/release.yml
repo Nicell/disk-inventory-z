@@ -162,6 +162,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/export"
           cp -R "$RUNNER_TEMP/dd/Build/Products/$CONFIGURATION/$APP_NAME.app" "$RUNNER_TEMP/export/"
 
+          # Apple Silicon refuses to run code with no signature at all.
+          codesign --force --deep --sign - "$RUNNER_TEMP/export/$APP_NAME.app"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/export/$APP_NAME.app"
+          lipo -archs "$RUNNER_TEMP/export/$APP_NAME.app/Contents/MacOS/$APP_NAME"
+
       # ---------- Notarization ----------
       - name: Notarize and staple
         if: matrix.notarize && steps.signing.outputs.have_cert == 'true' && env.APPLE_ID != ''
@@ -235,3 +240,4 @@ jobs:
         with:
           files: ${{ env.DMG_PATH }}
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

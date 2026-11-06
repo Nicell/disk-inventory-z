@@ -1,5 +1,5 @@
 /* Localized versions of Info.plist keys */
-CFBundleGetInfoString = "Disk Inventory Z version 1.5.0, Dani Sarfati 2026";
+CFBundleGetInfoString = "Disk Inventory Z version 2.1.0, Dani Sarfati, Nicell 2026";
 NSHumanReadableCopyright = "Mis à disposition selon la GPL";
 
 NSCalendarsUsageDescription = "Disk Inventory Z doit accéder aux fichiers de calendrier pour inspecter leurs tailles et autres attributs de fichier.\nAucune donnée ne sera lue.";

@@ -21,6 +21,7 @@
 #import "DrivesPanelController.h"
 #import "FileSizeFormatter.h"
 #import "Timing.h"
+#import "DIXBulkScanner.h"
 #import "InfoPanelController.h"
 #import "FSItem-Utilities.h"
 #import "NSFileManager-Extensions.h"
@@ -136,6 +137,7 @@ NSString *CollectFileKindStatisticsCanceledException = @"CollectFileKindStatisti
 @interface FileSystemDoc(Private)
 
 - (void) addItemToFileKindStatistic: (FSItem*) item includingChilds: (BOOL) includingChilds;
+- (void) addItem: (FSItem*) item toFileKindStatistics: (NSMutableDictionary*) statistics;
 - (void) removeItemFromFileKindStatistic: (FSItem*) item includingChilds: (BOOL) includingChilds;
 - (void) recalculateFileKindStatisticSizes;
 - (void) removePackagesFromFileKindStatistic: (FSItem*) item;
@@ -378,7 +380,7 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
     // Create the per-doc serial scan queue lazily on first use.
     if ( _scanQueue == NULL )
     {
-        _scanQueue = dispatch_queue_create("io.github.danifunker.disk-inventory-z.scan",
+        _scanQueue = dispatch_queue_create("io.github.nicell.disk-inventory-z.scan",
                                            DISPATCH_QUEUE_SERIAL);
     }
 
@@ -414,6 +416,9 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
                                  usePhysicalSize: usePhysicalSize
                              showPackageContents: showPackageContents];
 
+            DIXInodeSetFree( _scanHardlinkSet );
+            _scanHardlinkSet = NULL;
+
             BOOL cancelled = atomic_load(&_cancelRequested);
             uint64_t doneLoadingTime = getTime();
             LOG(@"loading time: %.2f seconds (cancelled=%d)",
@@ -422,29 +427,50 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
                 g_fileCount + g_folderCount, g_fileCount, g_folderCount);
 
             dispatch_async(dispatch_get_main_queue(), ^{
-                if ( !cancelled )
+                if ( cancelled )
                 {
-                    // Recompute the root's size from scratch. The per-splice
-                    // -insertChild:updateParent:YES accumulates size, but a
-                    // final pass guarantees we account for any edge case
-                    // (hardlink dedup, package sizing) that incremental sums
-                    // might have missed.
+                    [self finishBackgroundScanCancelled: YES];
+                    [capturedURL release];
+                    return;
+                }
+
+                // Every top-level subtree arrived with its sizes calculated and
+                // sorted, so only the root itself needs to be summed up. The old
+                // walker re-sums the whole tree as before, as a last consistency pass.
+                if ( [[NSUserDefaults standardUserDefaults] boolForKey: @"DIXLegacyScanner"] )
                     [_rootItem recalculateSize: [self showPhysicalFileSize]
                                   updateParent: NO];
+                else
+                    [_rootItem recalculateSizeFromDirectChildren];
 
-                    // Reset color assignments so the final treemap render
-                    // assigns the palette in size-descending order (matches
-                    // the original sync-scan behavior). Without this the
-                    // colors are whatever got handed out in scan order.
-                    [_kindColors reset];
-                    [_kindColors release];
-                    _kindColors = nil;
+                // Reset color assignments so the final treemap render
+                // assigns the palette in size-descending order (matches
+                // the original sync-scan behavior). Without this the
+                // colors are whatever got handed out in scan order.
+                [_kindColors reset];
+                [_kindColors release];
+                _kindColors = nil;
 
-                    [self refreshFileKindStatistics];
-                    _lastScanDurationSeconds = subtractTime(getTime(), startTime);
-                }
-                [self finishBackgroundScanCancelled: cancelled];
-                [capturedURL release];
+                // Visiting every file would freeze the UI on a big scan. The tree
+                // doesn't change until the scan is reported as finished below.
+                dispatch_async(_scanQueue, ^{
+                    NSMutableDictionary *statistics = [[NSMutableDictionary alloc] init];
+                    @autoreleasepool
+                    {
+                        [self addItem: [self zoomedItem] toFileKindStatistics: statistics];
+                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self willChangeValueForKey: @"kindStatistics"];
+                        [_fileKindStatistics release];
+                        _fileKindStatistics = statistics;
+                        [self reserveColorsForLargestKinds];
+                        [self didChangeValueForKey: @"kindStatistics"];
+
+                        _lastScanDurationSeconds = subtractTime(getTime(), startTime);
+                        [self finishBackgroundScanCancelled: atomic_load(&_cancelRequested)];
+                        [capturedURL release];
+                    });
+                });
             });
         }
     });
@@ -461,6 +487,7 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
                     showPackageContents: (BOOL) showPackageContents
 {
     [FSItem resetHardlinkDedup];
+    _scanHardlinkSet = DIXInodeSetCreate();
 
     NSArray<NSURLResourceKey> *keys = @[
         NSURLIsDirectoryKey, NSURLIsPackageKey, NSURLIsVolumeKey,
@@ -525,27 +552,15 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
             {
                 // Opaque package: sum descendant sizes without allocating
                 // FSItems for the contents.
-                unsigned long long pkgSize = 0;
-                NSDirectoryEnumerator *pkgEnum =
-                    [[NSFileManager defaultManager] enumeratorAtURL: childURL
-                                         includingPropertiesForKeys: @[ NSURLTotalFileAllocatedSizeKey,
-                                                                        NSURLFileAllocatedSizeKey ]
-                                                            options: 0
-                                                       errorHandler: nil];
-                for ( NSURL *u in pkgEnum ) @autoreleasepool
-                {
-                    if ( atomic_load(&_cancelRequested) ) break;
-                    NSNumber *sz = nil;
-                    NSURLResourceKey sk = usePhysicalSize ? NSURLTotalFileAllocatedSizeKey
-                                                          : NSURLFileAllocatedSizeKey;
-                    [u getResourceValue: &sz forKey: sk error: nil];
-                    if ( sz != nil )
-                        pkgSize += [sz unsignedLongLongValue];
-                }
-                [orphan setSizeValue: pkgSize];
+                [orphan loadPackageSize];
             }
-            // else: regular file (size already set in init), or volume mount
-            // point (we don't descend into mounted volumes).
+            else if ( !isDir )
+            {
+                // Size the file here, so it lands at the right place in the
+                // sorted child list right away.
+                [orphan loadFileSize: usePhysicalSize];
+            }
+            // else: volume mount point (we don't descend into mounted volumes).
         }
         @catch ( NSException *ex )
         {
@@ -1307,6 +1322,21 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 	return !atomic_load(&_cancelRequested);
 }
 
+- (void) fsItemScanningPath: (NSString*) path
+{
+	if ( !_scanInProgress )
+		return;
+
+	NSString *copy = [path copy];
+	[_workerCurrentPath release];
+	_workerCurrentPath = copy;
+}
+
+- (void*) fsItemHardlinkSet
+{
+	return _scanInProgress ? _scanHardlinkSet : NULL;
+}
+
 - (BOOL) fsItemShouldIgnoreCreatorCode: (FSItem*) item
 {
 	return [self ignoreCreatorCode];
@@ -1385,6 +1415,32 @@ NSString *DIXScanItemCount = @"DIXScanItemCount";
 - (void) recalculateTotalSize
 {
 	[[self rootItem] recalculateSize: [self showPhysicalFileSize] updateParent: NO];
+}
+
+// Thread-safe as long as nobody changes the tree: touches nothing but "statistics".
+- (void) addItem: (FSItem*) item toFileKindStatistics: (NSMutableDictionary*) statistics
+{
+    if ( item == nil )
+        return;
+
+    if ( [self itemIsNode: item] )
+    {
+        unsigned i = [item childCount];
+        while ( i-- )
+            [self addItem: [item childAtIndex: i] toFileKindStatistics: statistics];
+    }
+    else if ( [item kindName] != nil )
+    {
+        FileKindStatistic *statistic = [statistics objectForKey: [item kindName]];
+        if ( statistic != nil )
+            [statistic addItem: item];
+        else
+        {
+            statistic = [[FileKindStatistic alloc] initWithItem: item];
+            [statistics setObject: statistic forKey: [item kindName]];
+            [statistic release];
+        }
+    }
 }
 
 - (void) addItemToFileKindStatistic: (FSItem*) item includingChilds: (BOOL) includingChilds

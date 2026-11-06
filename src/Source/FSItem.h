@@ -40,6 +40,13 @@ typedef enum
     NSMutableArray<FSItem*> *_childs;
 	id _delegate;
 	BOOL _hardlinkDuplicate; //YES: this item is a second-or-later hardlink to an inode already counted in this scan, so its size should be charged as 0 to avoid double-counting
+
+	// Filled in by the bulk scanner. Such an item knows all of this without any
+	// file system access and has no _fileURL until something asks for it.
+	BOOL _hasScanInfo;
+	BOOL _scanIsFolder, _scanIsPackage, _scanIsAlias;
+	NSString *_scanName;
+	UInt64 _scanLogicalSize, _scanPhysicalSize;
 }
 
 - (id) initWithPath: (NSString *) path;
@@ -67,6 +74,16 @@ typedef enum
 - (void) setFileURL: (NSURL*) url;
 
 - (void) loadChildren;
+
+// Sums the size of this package's contents without creating items for them.
+- (void) loadPackageSize;
+
+// Sizes a top-level file, charging a hardlinked inode only once per scan.
+- (void) loadFileSize: (BOOL) usePhysicalSize;
+
+// Sums and sorts the direct children only. Enough after a bulk scan, where every
+// top-level subtree arrives with its sizes already calculated and sorted.
+- (void) recalculateSizeFromDirectChildren;
 
 - (NSString *) description;
 
@@ -136,6 +153,10 @@ typedef enum
 - (BOOL) fsItemShouldLookIntoPackages: (FSItem*) item; //set kind string in "loadChilds?";
 													   //default is NO (if not implemented by delegate)
 - (BOOL) fsItemShouldUsePhysicalFileSize: (FSItem*) item;
+//The bulk scanner reports where it is at from the thread that called "loadChildren".
+- (void) fsItemScanningPath: (NSString*) path;
+//Lets all top-level walks of one scan share their hardlink bookkeeping (DIXInodeSet*).
+- (void*) fsItemHardlinkSet;
 @end
 
 //Exception raised by FSItem

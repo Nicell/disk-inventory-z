@@ -363,6 +363,13 @@ NSString *TMVTouchedItem = @"TreeMapViewTouchedItem"; //key for touched item in 
 
 	if ( rendererToSelect != nil )
 		[self selectItemByCellId: rendererToSelect];
+	else if ( _selectedRenderer != nil )
+	{
+		// The item is too small to have a renderer, so there is nothing to
+		// highlight. Its selection is still valid, so post no notification.
+		_selectedRenderer = nil;
+		[self setNeedsDisplay: YES];
+	}
 }
 
 - (NSRect) itemRectByCellId: (TMVCellId) cellId

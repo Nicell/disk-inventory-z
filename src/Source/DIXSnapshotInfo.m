@@ -24,7 +24,7 @@ static void DIXEnsureCacheInited(void)
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         gSnapshotCache = [[NSMutableDictionary alloc] init];
-        gCacheQueue    = dispatch_queue_create("io.github.danifunker.dix.snapshotcache",
+        gCacheQueue    = dispatch_queue_create("io.github.nicell.dix.snapshotcache",
                                                 DISPATCH_QUEUE_SERIAL);
     });
 }

@@ -63,6 +63,7 @@
 		FCCFB323097FA42B009EA2B6 /* FSItem-Utilities.m in Sources */ = {isa = PBXBuildFile; fileRef = FCCFB2F8097FA42B009EA2B6 /* FSItem-Utilities.m */; };
 		FCCFB324097FA42B009EA2B6 /* MyDocumentController.m in Sources */ = {isa = PBXBuildFile; fileRef = FCCFB2F9097FA42B009EA2B6 /* MyDocumentController.m */; };
 		FCCFB325097FA42B009EA2B6 /* MainWindowController.m in Sources */ = {isa = PBXBuildFile; fileRef = FCCFB2FB097FA42B009EA2B6 /* MainWindowController.m */; };
+		DE5C0A012F00000000000003 /* DIXBulkScanner.m in Sources */ = {isa = PBXBuildFile; fileRef = DE5C0A012F00000000000001 /* DIXBulkScanner.m */; };
 		FCCFB326097FA42B009EA2B6 /* FSItem.m in Sources */ = {isa = PBXBuildFile; fileRef = FCCFB2FE097FA42B009EA2B6 /* FSItem.m */; };
 		FCCFB327097FA42B009EA2B6 /* FileTypeColors.m in Sources */ = {isa = PBXBuildFile; fileRef = FCCFB2FF097FA42B009EA2B6 /* FileTypeColors.m */; };
 		FCCFB328097FA42B009EA2B6 /* FileSystemDoc.m in Sources */ = {isa = PBXBuildFile; fileRef = FCCFB301097FA42B009EA2B6 /* FileSystemDoc.m */; };
@@ -249,6 +250,8 @@
 		FCCFB2FB097FA42B009EA2B6 /* MainWindowController.m */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.objc; path = src/Source/MainWindowController.m; sourceTree = "<group>"; };
 		FCCFB2FC097FA42B009EA2B6 /* MainWindowController.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = src/Source/MainWindowController.h; sourceTree = "<group>"; };
 		FCCFB2FD097FA42B009EA2B6 /* FSItem.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = src/Source/FSItem.h; sourceTree = "<group>"; };
+		DE5C0A012F00000000000001 /* DIXBulkScanner.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = src/Source/DIXBulkScanner.m; sourceTree = "<group>"; };
+		DE5C0A012F00000000000002 /* DIXBulkScanner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = src/Source/DIXBulkScanner.h; sourceTree = "<group>"; };
 		FCCFB2FE097FA42B009EA2B6 /* FSItem.m */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.objc; path = src/Source/FSItem.m; sourceTree = "<group>"; };
 		FCCFB2FF097FA42B009EA2B6 /* FileTypeColors.m */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.objc; path = src/Source/FileTypeColors.m; sourceTree = "<group>"; };
 		FCCFB300097FA42B009EA2B6 /* FileTypeColors.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = src/Source/FileTypeColors.h; sourceTree = "<group>"; };
@@ -575,6 +578,8 @@
 				FCCFB2FB097FA42B009EA2B6 /* MainWindowController.m */,
 				FCCFB2FC097FA42B009EA2B6 /* MainWindowController.h */,
 				FCCFB2FD097FA42B009EA2B6 /* FSItem.h */,
+				DE5C0A012F00000000000002 /* DIXBulkScanner.h */,
+				DE5C0A012F00000000000001 /* DIXBulkScanner.m */,
 				FCCFB2FE097FA42B009EA2B6 /* FSItem.m */,
 				FCCFB2FF097FA42B009EA2B6 /* FileTypeColors.m */,
 				FCCFB300097FA42B009EA2B6 /* FileTypeColors.h */,
@@ -777,6 +782,7 @@
 				FCCFB323097FA42B009EA2B6 /* FSItem-Utilities.m in Sources */,
 				FCCFB324097FA42B009EA2B6 /* MyDocumentController.m in Sources */,
 				FCCFB325097FA42B009EA2B6 /* MainWindowController.m in Sources */,
+				DE5C0A012F00000000000003 /* DIXBulkScanner.m in Sources */,
 				FCCFB326097FA42B009EA2B6 /* FSItem.m in Sources */,
 				FCCFB327097FA42B009EA2B6 /* FileTypeColors.m in Sources */,
 				FCCFB328097FA42B009EA2B6 /* FileSystemDoc.m in Sources */,
@@ -924,11 +930,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2.0.0;
-				DEVELOPMENT_TEAM = Q4F2GZ34R5;
+				CURRENT_PROJECT_VERSION = 2.1.0;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(FRAMEWORK_SEARCH_PATHS)",
@@ -947,9 +953,9 @@
 				INFOPLIST_FILE = src/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 2.0.0;
+				MARKETING_VERSION = 2.1.0;
 				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.danifunker.disk-inventory-z";
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nicell.disk-inventory-z";
 				PRODUCT_NAME = "Disk Inventory Z";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
@@ -964,10 +970,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2.0.0;
-				DEVELOPMENT_TEAM = Q4F2GZ34R5;
+				CURRENT_PROJECT_VERSION = 2.1.0;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_NS_ASSERTIONS = NO;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -986,8 +992,8 @@
 				INFOPLIST_FILE = src/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 2.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.danifunker.disk-inventory-z";
+				MARKETING_VERSION = 2.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nicell.disk-inventory-z";
 				PRODUCT_NAME = "Disk Inventory Z";
 				SDKROOT = macosx;
 				SWIFT_VERSION = 4.2;
